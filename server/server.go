@@ -148,7 +148,7 @@ func (s *Server) SetupDefaultRouter() {
 		c.JSON(http.StatusOK, items)
 	})
 	// 传入的是文件名，通过查询参数 ?name=
-	r.GET("/delete", func(c *gin.Context) {
+	r.DELETE("/delete", func(c *gin.Context) {
 		name := c.Query("name")
 		if name == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'name' query parameter"})

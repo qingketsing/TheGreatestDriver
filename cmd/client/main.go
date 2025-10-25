@@ -13,12 +13,30 @@ import (
 	"single_drive/shared"
 )
 
+// Client 客户端结构体，管理文件和元数据
 type Client struct {
-	files []shared.FileObject
-	URL   string
+	Files   []shared.FileObject // 本地文件对象缓存
+	Metas   []shared.MetaData   // 服务器端元数据缓存
+	BaseURL string              // 服务器地址
 }
 
-func storeFileObject(fo *shared.FileObject) error {
+// NewClient 创建新的客户端实例
+func NewClient(baseURL string) *Client {
+	if baseURL == "" {
+		baseURL = os.Getenv("UPLOAD_URL")
+	}
+	if baseURL == "" {
+		baseURL = "http://139.196.15.66:8000"
+	}
+	return &Client{
+		BaseURL: baseURL,
+		Files:   make([]shared.FileObject, 0),
+		Metas:   make([]shared.MetaData, 0),
+	}
+}
+
+// StoreFileObject 将文件对象存储到本地目录
+func (c *Client) StoreFileObject(fo *shared.FileObject) error {
 	storageDir := `D:\drivetest`
 	absDir, err := filepath.Abs(storageDir)
 	if err != nil {
@@ -33,12 +51,15 @@ func storeFileObject(fo *shared.FileObject) error {
 	if err := os.WriteFile(destPath, fo.Content, 0644); err != nil {
 		return err
 	}
+
+	// 添加到本地缓存
+	c.Files = append(c.Files, *fo)
 	return nil
 }
 
-func uploadFileObjectHTTP(fo *shared.FileObject, meta *shared.MetaData) error {
-	// 修改为本地测试地址，部署时改为服务器IP
-	uploadURL := "http://139.196.15.66:8000/upload"
+// UploadFileObject 上传文件对象到服务器
+func (c *Client) UploadFileObject(fo *shared.FileObject, meta *shared.MetaData) error {
+	uploadURL := c.BaseURL + "/upload"
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -85,77 +106,79 @@ func uploadFileObjectHTTP(fo *shared.FileObject, meta *shared.MetaData) error {
 	}
 
 	fmt.Printf("文件 %s 已上传到服务器\n", fo.Name)
+
+	// 上传成功后自动刷新服务器端元数据缓存
+	if err := c.RefreshMetaList(); err != nil {
+		fmt.Printf("warning: 刷新元数据列表失败: %v\n", err)
+	}
+
 	return nil
 }
 
-func GetFileList() ([]shared.MetaData, error) {
-	var fileList []shared.MetaData
-
-	// 支持通过环境变量指定服务器地址
-	base := os.Getenv("UPLOAD_URL")
-	if base == "" {
-		base = "http://139.196.15.66:8000"
-	}
-
-	resp, err := http.Get(base + "/list")
+// RefreshMetaList 从服务器获取最新的元数据列表并更新缓存
+func (c *Client) RefreshMetaList() error {
+	resp, err := http.Get(c.BaseURL + "/list")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server returned status %d", resp.StatusCode)
+		return fmt.Errorf("server returned status %d", resp.StatusCode)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&fileList); err != nil {
-		return nil, err
+	var metas []shared.MetaData
+	if err := json.NewDecoder(resp.Body).Decode(&metas); err != nil {
+		return err
 	}
 
-	return fileList, nil
+	c.Metas = metas
+	fmt.Printf("已刷新元数据列表，共 %d 项\n", len(c.Metas))
+	return nil
 }
 
-func (c *Client) deleteFile(filename string) error {
-	// 找到文件在服务器上的ID
-	for _, item := range c.files {
-		if item.Name == filename {
-			// 调用 server 的删除接口，使用查询参数 name=<filename>
-			base := os.Getenv("UPLOAD_URL")
-			if base == "" {
-				base = "http://139.196.15.66:8000"
-			}
+// DeleteFile 删除服务器上的文件
+func (c *Client) DeleteFile(filename string) error {
+	delURL := fmt.Sprintf("%s/delete?name=%s", c.BaseURL, url.QueryEscape(filename))
+	req, err := http.NewRequest(http.MethodDelete, delURL, nil)
+	if err != nil {
+		return err
+	}
 
-			delURL := fmt.Sprintf("%s/delete?name=%s", base, url.QueryEscape(filename))
-			req, err := http.NewRequest(http.MethodDelete, delURL, nil)
-			if err != nil {
-				return err
-			}
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
 
-			client := &http.Client{}
-			resp, err := client.Do(req)
-			if err != nil {
-				return err
-			}
-			defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("delete failed: server returned %d", resp.StatusCode)
+	}
 
-			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("delete failed: server returned %d", resp.StatusCode)
-			}
-
-			// 从本地缓存中移除
-			var newFiles []shared.FileObject
-			for _, f := range c.files {
-				if f.Name != filename {
-					newFiles = append(newFiles, f)
-				}
-			}
-			c.files = newFiles
-			return nil
+	// 从本地文件缓存中移除
+	var newFiles []shared.FileObject
+	for _, f := range c.Files {
+		if f.Name != filename {
+			newFiles = append(newFiles, f)
 		}
 	}
-	return fmt.Errorf("file %s not found on server", filename)
+	c.Files = newFiles
+
+	fmt.Printf("文件 %s 已从服务器删除\n", filename)
+
+	// 删除成功后自动刷新服务器端元数据缓存
+	if err := c.RefreshMetaList(); err != nil {
+		fmt.Printf("warning: 刷新元数据列表失败: %v\n", err)
+	}
+
+	return nil
 }
 
 func main() {
+	// 创建客户端实例
+	client := NewClient("")
+	// 读取测试文件
 	p, _ := filepath.Abs("test/app.js")
 	fo, meta, err := shared.NewFileObject(p)
 	if err != nil {
@@ -164,21 +187,31 @@ func main() {
 	}
 
 	fmt.Printf("文件对象创建成功: %+v\n", meta)
-	if err := storeFileObject(fo); err != nil {
+
+	// 存储文件到本地
+	if err := client.StoreFileObject(fo); err != nil {
 		fmt.Print(err)
 		return
 	}
 	fmt.Println("文件存储成功")
-	if err := uploadFileObjectHTTP(fo, meta); err != nil {
+
+	// 上传文件到服务器（会自动刷新元数据列表）
+	if err := client.UploadFileObject(fo, meta); err != nil {
 		fmt.Print(err)
 		return
 	}
 	fmt.Println("文件上传成功")
 
-	items, err := GetFileList()
-	if err != nil {
-		fmt.Println("GetFileList error:", err)
-	} else {
-		fmt.Printf("server items: %+v\n", items)
+	// 显示服务器上的所有文件
+	fmt.Printf("\n服务器文件列表: %+v\n", client.Metas)
+
+	// 删除文件示例
+	if err := client.DeleteFile("app.js"); err != nil {
+		fmt.Print(err)
+		return
 	}
+	fmt.Println("文件删除成功")
+
+	fmt.Printf("\n服务器文件列表: %+v\n", client.Metas)
+
 }
