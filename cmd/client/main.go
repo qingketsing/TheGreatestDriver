@@ -82,6 +82,32 @@ func uploadFileObjectHTTP(fo *shared.FileObject, meta *shared.MetaData) error {
 	return nil
 }
 
+func GetFileList() ([]shared.MetaData, error) {
+	var fileList []shared.MetaData
+
+	// 支持通过环境变量指定服务器地址
+	base := os.Getenv("UPLOAD_URL")
+	if base == "" {
+		base = "http://139.196.15.66:8000"
+	}
+
+	resp, err := http.Get(base + "/list")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server returned status %d", resp.StatusCode)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&fileList); err != nil {
+		return nil, err
+	}
+
+	return fileList, nil
+}
+
 func main() {
 	p, _ := filepath.Abs("test/app.js")
 	fo, meta, err := shared.NewFileObject(p)
@@ -99,5 +125,13 @@ func main() {
 	if err := uploadFileObjectHTTP(fo, meta); err != nil {
 		fmt.Print(err)
 		return
+	}
+	fmt.Println("文件上传成功")
+
+	items, err := GetFileList()
+	if err != nil {
+		fmt.Println("GetFileList error:", err)
+	} else {
+		fmt.Printf("server items: %+v\n", items)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"single_drive/shared"
 
 	"database/sql"
+
 	_ "github.com/lib/pq"
 
 	"github.com/gin-gonic/gin"
@@ -22,7 +23,7 @@ type Server struct {
 }
 
 func (s *Server) SetupDefaultSql() {
-	db, err := sql.Open("postgres", "host=localhost port=5432 user=postgres password=329426 dbname=tododb sslmode=disable")
+	db, err := sql.Open("postgres", "host=localhost port=5432 user=postgres password=329426 dbname=driver sslmode=disable")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -107,11 +108,29 @@ func (s *Server) SetupDefaultRouter() {
 			return
 		}
 
-		//将元数据存入数据库
-		_, err = s.DB.Exec("INSERT INTO drivelist (name, capacity) VALUES ($1, $2)", meta.Name, meta.Capacity)
+		// 将元数据存入数据库：存在则更新 capacity，否则插入新记录
+		var existingID int
+		err = s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", meta.Name).Scan(&existingID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save metadata: " + err.Error()})
-			return
+			if err == sql.ErrNoRows {
+				// 不存在，插入新记录
+				_, err = s.DB.Exec("INSERT INTO drivelist (name, capacity) VALUES ($1, $2)", meta.Name, meta.Capacity)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert metadata: " + err.Error()})
+					return
+				}
+			} else {
+				// 查询出错
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check metadata: " + err.Error()})
+				return
+			}
+		} else {
+			// 记录已存在，更新容量（capacity）字段
+			_, err = s.DB.Exec("UPDATE drivelist SET capacity=$1 WHERE id=$2", meta.Capacity, existingID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update metadata: " + err.Error()})
+				return
+			}
 		}
 
 		// 打印日志并返回成功响应
@@ -121,6 +140,17 @@ func (s *Server) SetupDefaultRouter() {
 			"filename": file.Filename,
 			"path":     destPath,
 		})
+	})
+
+	// 新增：列出 drivelist 中的记录，方便检查数据库中是否有数据
+	r.GET("/list", func(c *gin.Context) {
+		items := s.ReadItemsFromDB(s.DB)
+		c.JSON(http.StatusOK, items)
+	})
+
+	r.GET("/files", func(c *gin.Context) {
+		metalist := s.ReadItemsFromDB(s.DB)
+		c.JSON(http.StatusOK, metalist)
 	})
 
 	s.Ge = r
