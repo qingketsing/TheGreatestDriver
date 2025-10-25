@@ -6,11 +6,17 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 
 	"single_drive/shared"
 )
+
+type Client struct {
+	files []shared.FileObject
+	URL   string
+}
 
 func storeFileObject(fo *shared.FileObject) error {
 	storageDir := `D:\drivetest`
@@ -106,6 +112,47 @@ func GetFileList() ([]shared.MetaData, error) {
 	}
 
 	return fileList, nil
+}
+
+func (c *Client) deleteFile(filename string) error {
+	// 找到文件在服务器上的ID
+	for _, item := range c.files {
+		if item.Name == filename {
+			// 调用 server 的删除接口，使用查询参数 name=<filename>
+			base := os.Getenv("UPLOAD_URL")
+			if base == "" {
+				base = "http://139.196.15.66:8000"
+			}
+
+			delURL := fmt.Sprintf("%s/delete?name=%s", base, url.QueryEscape(filename))
+			req, err := http.NewRequest(http.MethodDelete, delURL, nil)
+			if err != nil {
+				return err
+			}
+
+			client := &http.Client{}
+			resp, err := client.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("delete failed: server returned %d", resp.StatusCode)
+			}
+
+			// 从本地缓存中移除
+			var newFiles []shared.FileObject
+			for _, f := range c.files {
+				if f.Name != filename {
+					newFiles = append(newFiles, f)
+				}
+			}
+			c.files = newFiles
+			return nil
+		}
+	}
+	return fmt.Errorf("file %s not found on server", filename)
 }
 
 func main() {

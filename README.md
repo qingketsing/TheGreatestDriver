@@ -454,9 +454,9 @@ git config --global --add safe.directory D:/
 
 ## 下一步开发计划
 
-- [ ] 文件下载接口 (`GET /download/{id}`)
 - [ ] 文件列表分页查询
-- [ ] 文件去重（基于 SHA256 哈希）
+- [ ] 文件删除接口 (`GET /delete?name=`)
+- [ ] 文件下载接口 (`GET /download?name=`)
 - [ ] 用户认证系统（JWT）
 - [ ] 文件访问权限控制
 - [ ] 断点续传支持

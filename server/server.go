@@ -23,7 +23,7 @@ type Server struct {
 }
 
 func (s *Server) SetupDefaultSql() {
-	db, err := sql.Open("postgres", "host=localhost port=5432 user=postgres password=329426 dbname=driver sslmode=disable")
+	db, err := sql.Open("postgres", "host=localhost port=5432 user=postgres password=329426 dbname=tododb sslmode=disable")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -147,10 +147,31 @@ func (s *Server) SetupDefaultRouter() {
 		items := s.ReadItemsFromDB(s.DB)
 		c.JSON(http.StatusOK, items)
 	})
-
-	r.GET("/files", func(c *gin.Context) {
-		metalist := s.ReadItemsFromDB(s.DB)
-		c.JSON(http.StatusOK, metalist)
+	// 传入的是文件名，通过查询参数 ?name=
+	r.GET("/delete", func(c *gin.Context) {
+		name := c.Query("name")
+		if name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'name' query parameter"})
+			return
+		}
+		// 删除数据库中的记录
+		result, err := s.DB.Exec("DELETE FROM drivelist WHERE name=$1", name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete record: " + err.Error()})
+			return
+		}
+		// 删除文件对象
+		uploadDir := "./uploads"
+		filePath := filepath.Join(uploadDir, name)
+		if err := os.Remove(filePath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete file: " + err.Error()})
+			return
+		}
+		rowsAffected, _ := result.RowsAffected()
+		c.JSON(http.StatusOK, gin.H{
+			"message":       "File and record deleted successfully",
+			"rows_affected": rowsAffected,
+		})
 	})
 
 	s.Ge = r

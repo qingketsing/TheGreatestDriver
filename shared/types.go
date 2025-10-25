@@ -7,6 +7,7 @@ import (
 
 // 导出类型，包外可见
 type MetaData struct {
+	id       int64  // 私有字段，包外不可见
 	Name     string `json:"name"`
 	Capacity int64  `json:"capacity"`
 }
