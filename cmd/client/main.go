@@ -123,10 +123,10 @@ func (c *Client) UploadFileObject(fo *shared.FileObject, meta *shared.MetaData, 
 }
 
 func (c *Client) UploadFileTree(ft *shared.FileTree, basePath string) error {
-	// 构造当前节点的完整路径
+	// 构造当前节点的完整路径（使用正斜杠以保证跨平台兼容性）
 	currentPath := ft.Name
 	if basePath != "" {
-		currentPath = filepath.Join(basePath, ft.Name)
+		currentPath = basePath + "/" + ft.Name
 	}
 
 	if ft.IsDir {
@@ -136,7 +136,7 @@ func (c *Client) UploadFileTree(ft *shared.FileTree, basePath string) error {
 		if err != nil {
 			return fmt.Errorf("创建目录 %s 失败: %v", currentPath, err)
 		}
-		resp.Body.Close()
+		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			bodyBytes, _ := io.ReadAll(resp.Body)
