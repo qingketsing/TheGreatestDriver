@@ -60,6 +60,11 @@ func (c *Client) StoreFileObject(fo *shared.FileObject) error {
 
 // UploadFileObject 上传文件对象到服务器
 func (c *Client) UploadFileObject(fo *shared.FileObject, meta *shared.MetaData) error {
+	return c.uploadFileObjectWithParent(fo, meta, 0)
+}
+
+// uploadFileObjectWithParent 上传文件对象到服务器，支持指定父节点ID
+func (c *Client) uploadFileObjectWithParent(fo *shared.FileObject, meta *shared.MetaData, parentID int64) error {
 	uploadURL := c.BaseURL + "/upload"
 
 	body := &bytes.Buffer{}
@@ -82,7 +87,7 @@ func (c *Client) UploadFileObject(fo *shared.FileObject, meta *shared.MetaData) 
 		return err
 	}
 	_ = writer.WriteField("meta", string(metaJSON))
-	_ = writer.WriteField("path", "driver_test")
+	_ = writer.WriteField("parent_id", fmt.Sprintf("%d", parentID))
 
 	if err = writer.Close(); err != nil {
 		return err
@@ -111,6 +116,110 @@ func (c *Client) UploadFileObject(fo *shared.FileObject, meta *shared.MetaData) 
 	// 上传成功后自动刷新服务器端元数据缓存
 	if err := c.RefreshMetaList(); err != nil {
 		fmt.Printf("warning: 刷新元数据列表失败: %v\n", err)
+	}
+
+	return nil
+}
+
+// UploadFileTree 递归上传整个文件树
+// 返回上传的文件数量和错误
+func (c *Client) UploadFileTree(rootPath string) (int, error) {
+	// 读取文件树结构
+	tree, _, err := shared.ReadFileTree(rootPath)
+	if err != nil {
+		return 0, fmt.Errorf("读取文件树失败: %w", err)
+	}
+
+	// 递归上传，从根节点（parentID=0）开始
+	count := 0
+	if err := c.uploadTreeNode(tree, 0, &count); err != nil {
+		return count, err
+	}
+
+	fmt.Printf("\n文件树上传完成，共上传 %d 个文件/目录\n", count)
+	return count, nil
+}
+
+// uploadTreeNode 递归上传树节点
+func (c *Client) uploadTreeNode(node *shared.FileTree, parentID int64, count *int) error {
+	// 准备上传当前节点
+	uploadURL := c.BaseURL + "/upload"
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	// 构造元数据
+	meta := shared.MetaData{
+		Name:     node.Name,
+		Capacity: node.Capacity,
+	}
+	metaJSON, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+
+	// 如果是文件，上传文件内容
+	if !node.IsDir && node.Fileobj != nil {
+		part, err := writer.CreateFormFile("file", node.Fileobj.Name)
+		if err != nil {
+			return err
+		}
+		if _, err = part.Write(node.Fileobj.Content); err != nil {
+			writer.Close()
+			return err
+		}
+	}
+
+	// 添加元数据和父节点ID
+	_ = writer.WriteField("meta", string(metaJSON))
+	_ = writer.WriteField("parent_id", fmt.Sprintf("%d", parentID))
+	_ = writer.WriteField("is_dir", fmt.Sprintf("%t", node.IsDir))
+
+	if err = writer.Close(); err != nil {
+		return err
+	}
+
+	// 发送请求
+	req, err := http.NewRequest("POST", uploadURL, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("上传 %s 失败，状态码: %d, 响应: %s", node.Name, resp.StatusCode, string(bodyBytes))
+	}
+
+	// 解析响应获取新节点的ID
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	*count++
+	if node.IsDir {
+		fmt.Printf("📁 目录 %s 已创建 (ID: %d)\n", node.Name, result.ID)
+	} else {
+		fmt.Printf("📄 文件 %s 已上传 (ID: %d)\n", node.Name, result.ID)
+	}
+
+	// 如果是目录，递归上传子节点
+	if node.IsDir && len(node.Children) > 0 {
+		for i := range node.Children {
+			if err := c.uploadTreeNode(&node.Children[i], result.ID, count); err != nil {
+				return fmt.Errorf("上传子节点 %s 失败: %w", node.Children[i].Name, err)
+			}
+		}
 	}
 
 	return nil
@@ -213,46 +322,81 @@ func (c *Client) downloadFileObject(name string) error {
 func main() {
 	// 创建客户端实例
 	client := NewClient("")
-	// 读取测试文件
+
+	// 示例1: 上传单个文件
+	fmt.Println("=== 示例1: 上传单个文件 ===")
 	p, _ := filepath.Abs("test/app.js")
-	fo, meta, err := shared.NewFileObject(p)
+
+	// 检查是文件还是目录
+	info, err := os.Stat(p)
 	if err != nil {
-		fmt.Print(err)
+		fmt.Printf("无法访问路径: %v\n", err)
 		return
 	}
 
-	fmt.Printf("文件对象创建成功: %+v\n", meta)
+	if info.IsDir() {
+		// 如果是目录，使用文件树上传
+		fmt.Printf("检测到目录: %s，开始递归上传...\n", p)
+		count, err := client.UploadFileTree(p)
+		if err != nil {
+			fmt.Printf("文件树上传失败: %v\n", err)
+			return
+		}
+		fmt.Printf("✓ 成功上传 %d 个文件/目录\n", count)
+	} else {
+		// 如果是文件，使用单文件上传
+		fo, meta, err := shared.NewFileObject(p)
+		if err != nil {
+			fmt.Printf("创建文件对象失败: %v\n", err)
+			return
+		}
 
-	// 存储文件到本地
-	if err := client.StoreFileObject(fo); err != nil {
-		fmt.Print(err)
-		return
-	}
-	fmt.Println("文件存储成功")
+		fmt.Printf("文件对象创建成功: %+v\n", meta)
 
-	// 上传文件到服务器（会自动刷新元数据列表）
-	if err := client.UploadFileObject(fo, meta); err != nil {
-		fmt.Print(err)
-		return
+		// 存储文件到本地
+		if err := client.StoreFileObject(fo); err != nil {
+			fmt.Printf("本地存储失败: %v\n", err)
+			return
+		}
+		fmt.Println("✓ 文件存储成功")
+
+		// 上传文件到服务器
+		if err := client.UploadFileObject(fo, meta); err != nil {
+			fmt.Printf("上传失败: %v\n", err)
+			return
+		}
+		fmt.Println("✓ 文件上传成功")
 	}
-	fmt.Println("文件上传成功")
 
 	// 显示服务器上的所有文件
 	fmt.Printf("\n服务器文件列表: %+v\n", client.Metas)
 
+	// 示例2: 上传整个目录树（如果你想测试）
+	// 取消下面的注释来测试目录上传
+	/*
+		fmt.Println("\n=== 示例2: 上传整个目录 ===")
+		testDir := "test"  // 修改为你想上传的目录
+		count, err := client.UploadFileTree(testDir)
+		if err != nil {
+			fmt.Printf("目录上传失败: %v\n", err)
+			return
+		}
+		fmt.Printf("✓ 成功上传目录，共 %d 个文件/目录\n", count)
+	*/
+
 	// 下载文件示例
+	fmt.Println("\n=== 下载文件示例 ===")
 	if err := client.downloadFileObject("app.js"); err != nil {
-		fmt.Print(err)
-		return
+		fmt.Printf("下载失败: %v\n", err)
 	}
 
 	// 删除文件示例
+	fmt.Println("\n=== 删除文件示例 ===")
 	if err := client.DeleteFile("app.js"); err != nil {
-		fmt.Print(err)
-		return
+		fmt.Printf("删除失败: %v\n", err)
+	} else {
+		fmt.Println("✓ 文件删除成功")
 	}
-	fmt.Println("文件删除成功")
 
-	fmt.Printf("\n服务器文件列表: %+v\n", client.Metas)
-
+	fmt.Printf("\n最终服务器文件列表: %+v\n", client.Metas)
 }
