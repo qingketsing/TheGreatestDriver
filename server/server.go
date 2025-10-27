@@ -48,13 +48,13 @@ func (s *Server) SetupDefaultSql() {
 
 	// 创建闭包表（Closure Table）用于存储文件树结构
 	createClosureTbl := `CREATE TABLE IF NOT EXISTS drivelist_closure (
-		ancestor BIGINT NOT NULL,
-		descendant BIGINT NOT NULL,
-		depth INT NOT NULL,
-		created_at TIMESTAMPTZ DEFAULT now(),
-		PRIMARY KEY (ancestor, descendant),
-		FOREIGN KEY (ancestor) REFERENCES drivelist(id) ON DELETE CASCADE,
-		FOREIGN KEY (descendant) REFERENCES drivelist(id) ON DELETE CASCADE
+    ancestor INTEGER NOT NULL,
+    descendant INTEGER NOT NULL,
+    depth INT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (ancestor, descendant),
+    FOREIGN KEY (ancestor) REFERENCES drivelist(id) ON DELETE CASCADE,
+    FOREIGN KEY (descendant) REFERENCES drivelist(id) ON DELETE CASCADE
 	)`
 	if _, err := db.Exec(createClosureTbl); err != nil {
 		db.Close()
