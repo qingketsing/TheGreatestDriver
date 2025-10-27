@@ -173,6 +173,22 @@ func (s *Server) SetupDefaultRouter() {
 			"rows_affected": rowsAffected,
 		})
 	})
+	// 下载, 通过查询参数 ?name=
+	r.GET("/download", func(c *gin.Context) {
+		name := c.Query("name")
+		if name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'name' query parameter"})
+			return
+		}
+		uploadDir := "./uploads"
+		filePath := filepath.Join(uploadDir, name)
+		c.FileAttachment(filePath, name)
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+			return
+		}
+
+	})
 
 	s.Ge = r
 }

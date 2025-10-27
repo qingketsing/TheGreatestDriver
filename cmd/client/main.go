@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -175,6 +176,40 @@ func (c *Client) DeleteFile(filename string) error {
 	return nil
 }
 
+func (c *Client) downloadFileObject(name string) error {
+	downloadURL := fmt.Sprintf("%s/download?name=%s", c.BaseURL, url.QueryEscape(name))
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: server returned %d", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("文件 %s 下载成功，大小 %d 字节\n", name, len(data))
+	// 保存到本地download文件夹
+	storageDir := "./download"
+	absDir, err := filepath.Abs(storageDir)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(absDir, os.ModePerm); err != nil {
+		return err
+	}
+
+	destPath := filepath.Join(absDir, name)
+	if err := os.WriteFile(destPath, data, 0644); err != nil {
+		return err
+	}
+	fmt.Printf("文件 %s 已保存到本地路径 %s\n", name, destPath)
+	return nil
+}
+
 func main() {
 	// 创建客户端实例
 	client := NewClient("")
@@ -204,6 +239,12 @@ func main() {
 
 	// 显示服务器上的所有文件
 	fmt.Printf("\n服务器文件列表: %+v\n", client.Metas)
+
+	// 下载文件示例
+	if err := client.downloadFileObject("app.js"); err != nil {
+		fmt.Print(err)
+		return
+	}
 
 	// 删除文件示例
 	if err := client.DeleteFile("app.js"); err != nil {
