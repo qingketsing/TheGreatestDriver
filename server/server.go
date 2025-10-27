@@ -122,33 +122,16 @@ func (s *Server) SetupDefaultRouter() {
 			return
 		}
 
-		// 获取可选的路径字段（如 "data/subdir"）
-		userPath := c.PostForm("path")
-		// 安全检查：不允许绝对路径或上级目录引用
-		if userPath != "" {
-			if strings.Contains(userPath, "..") || strings.HasPrefix(userPath, "/") || strings.HasPrefix(userPath, "\\") {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid path: path traversal not allowed"})
-				return
-			}
-			// 清理路径
-			userPath = filepath.Clean(userPath)
-		}
-
 		// 定义服务器上的存储目录
+		// 为了安全和可移植性，我们保存在程序运行目录下的 "uploads" 文件夹
 		uploadDir := "./uploads"
-		destDir := uploadDir
-		if userPath != "" && userPath != "." {
-			destDir = filepath.Join(uploadDir, userPath)
-		}
-
-		// 确保目标目录存在（包括子目录）
-		if err := os.MkdirAll(destDir, os.ModePerm); err != nil {
+		if err := os.MkdirAll(uploadDir, os.ModePerm); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage directory: " + err.Error()})
 			return
 		}
 
 		// 将文件保存到服务器的目标路径
-		destPath := filepath.Join(destDir, file.Filename)
+		destPath := filepath.Join(uploadDir, file.Filename)
 		if err := c.SaveUploadedFile(file, destPath); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file: " + err.Error()})
 			return
@@ -357,13 +340,27 @@ func (s *Server) SetupDefaultRouter() {
 			return
 		}
 
-		// 解析路径，找到父节点并插入新目录节点
-		// 这里简化处理：直接插入到 drivelist，使用闭包表维护层级关系
-		// path 格式: "root/subdir/newdir"
+		// 安全检查：防止路径穿越
+		if strings.Contains(path, "..") || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid path"})
+			return
+		}
 
+		// 清理路径
+		path = filepath.Clean(path)
+
+		// 在文件系统中创建实际目录
+		uploadDir := "./uploads"
+		fullPath := filepath.Join(uploadDir, path)
+		if err := os.MkdirAll(fullPath, os.ModePerm); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory on filesystem: " + err.Error()})
+			return
+		}
+
+		// 数据库操作：使用完整路径作为名称
 		// 1. 先检查路径是否已存在
 		var existingID int64
-		err := s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", filepath.Base(path)).Scan(&existingID)
+		err := s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", path).Scan(&existingID)
 		if err == nil {
 			c.JSON(http.StatusOK, gin.H{"message": "Directory already exists", "id": existingID})
 			return
@@ -372,9 +369,9 @@ func (s *Server) SetupDefaultRouter() {
 		// 2. 插入目录节点（容量为0表示目录）
 		var newID int64
 		err = s.DB.QueryRow("INSERT INTO drivelist (name, capacity) VALUES ($1, 0) RETURNING id",
-			filepath.Base(path)).Scan(&newID)
+			path).Scan(&newID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory in database: " + err.Error()})
 			return
 		}
 
@@ -387,11 +384,10 @@ func (s *Server) SetupDefaultRouter() {
 		}
 
 		// 4. 如果有父路径，建立父子关系
-		// 这里简化处理：如果 path 包含 "/"，则查找父目录
 		parentPath := filepath.Dir(path)
-		if parentPath != "." && parentPath != "/" {
+		if parentPath != "." && parentPath != "/" && parentPath != "\\" {
 			var parentID int64
-			err = s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", filepath.Base(parentPath)).Scan(&parentID)
+			err = s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", parentPath).Scan(&parentID)
 			if err == nil {
 				// 复制父节点的所有祖先关系
 				_, err = s.DB.Exec(`

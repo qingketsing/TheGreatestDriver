@@ -60,7 +60,8 @@ func (c *Client) StoreFileObject(fo *shared.FileObject) error {
 }
 
 // UploadFileObject 上传文件对象到服务器
-func (c *Client) UploadFileObject(fo *shared.FileObject, meta *shared.MetaData) error {
+// relativePath 参数指定文件在服务器上的相对路径（相对于 uploads 目录）
+func (c *Client) UploadFileObject(fo *shared.FileObject, meta *shared.MetaData, relativePath string) error {
 	uploadURL := c.BaseURL + "/upload"
 
 	body := &bytes.Buffer{}
@@ -83,7 +84,11 @@ func (c *Client) UploadFileObject(fo *shared.FileObject, meta *shared.MetaData) 
 		return err
 	}
 	_ = writer.WriteField("meta", string(metaJSON))
-	_ = writer.WriteField("path", "driver_test")
+
+	// 使用传入的相对路径
+	if relativePath != "" {
+		_ = writer.WriteField("path", relativePath)
+	}
 
 	if err = writer.Close(); err != nil {
 		return err
@@ -157,7 +162,8 @@ func (c *Client) UploadFileTree(ft *shared.FileTree, basePath string) error {
 			Capacity: ft.Fileobj.Capacity,
 		}
 
-		if err := c.UploadFileObject(ft.Fileobj, meta); err != nil {
+		// 传递文件所在的目录路径（不包括文件名本身）
+		if err := c.UploadFileObject(ft.Fileobj, meta, basePath); err != nil {
 			return fmt.Errorf("上传文件 %s 失败: %v", currentPath, err)
 		}
 		fmt.Printf("✓ 上传文件: %s (%d 字节)\n", currentPath, ft.Capacity)
@@ -281,7 +287,8 @@ func main() {
 	fmt.Println("文件存储成功")
 
 	// 上传文件到服务器（会自动刷新元数据列表）
-	if err := client.UploadFileObject(fo, meta); err != nil {
+	// 使用空字符串表示上传到根目录
+	if err := client.UploadFileObject(fo, meta, ""); err != nil {
 		fmt.Print(err)
 		return
 	}
