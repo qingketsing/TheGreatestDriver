@@ -27,10 +27,10 @@ type FileTree struct {
 }
 
 // ReadFileTree 读取目录并返回文件树结构
-func ReadFileTree(rootPath string) (*FileTree, MetaData, error) {
+func ReadFileTree(rootPath string) (*FileTree, error) {
 	info, err := os.Stat(rootPath)
 	if err != nil {
-		return nil, MetaData{}, err
+		return nil, err
 	}
 	node := &FileTree{
 		Name:     info.Name(),
@@ -42,25 +42,25 @@ func ReadFileTree(rootPath string) (*FileTree, MetaData, error) {
 	if info.IsDir() {
 		entries, err := os.ReadDir(rootPath)
 		if err != nil {
-			return nil, MetaData{}, err
+			return nil, err
 		}
 		for _, entry := range entries {
 			childPath := rootPath + string(os.PathSeparator) + entry.Name()
-			childNode, meta, err := ReadFileTree(childPath)
+			childNode, err := ReadFileTree(childPath)
 			if err != nil {
-				return nil, meta, err
+				return nil, err
 			}
 			node.Children = append(node.Children, *childNode)
 		}
-		return node, MetaData{}, nil
+		return node, nil
 	} else {
 		// 如果是文件，读取文件内容
-		var meta *MetaData
-		node.Fileobj, meta, err = NewFileObject(rootPath)
+		node.Fileobj, _, err = NewFileObject(rootPath)
 		if err != nil {
-			return nil, MetaData{}, err
+			return nil, err
 		}
-		return node, *meta, nil
+		node.Capacity = node.Fileobj.Capacity
+		return node, nil
 	}
 }
 

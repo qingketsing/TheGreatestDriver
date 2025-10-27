@@ -114,119 +114,59 @@ func (s *Server) SetupDefaultRouter() {
 			return
 		}
 
-		// 获取可选的 parent_id 和 is_dir 参数
-		parentIDStr := c.DefaultPostForm("parent_id", "0")
-		isDirStr := c.DefaultPostForm("is_dir", "false")
-
-		var parentID int64
-		if _, err := fmt.Sscanf(parentIDStr, "%d", &parentID); err != nil {
-			parentID = 0
+		// 从表单中获取文件
+		file, err := c.FormFile("file")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "File not provided: " + err.Error()})
+			return
 		}
 
-		isDir := isDirStr == "true"
-
 		// 定义服务器上的存储目录
+		// 为了安全和可移植性，我们保存在程序运行目录下的 "uploads" 文件夹
 		uploadDir := "./uploads"
 		if err := os.MkdirAll(uploadDir, os.ModePerm); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage directory: " + err.Error()})
 			return
 		}
 
-		var destPath string
-		var newID int64
-
-		// 开始事务
-		tx, err := s.DB.Begin()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start transaction: " + err.Error()})
+		// 将文件保存到服务器的目标路径
+		destPath := filepath.Join(uploadDir, file.Filename)
+		if err := c.SaveUploadedFile(file, destPath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file: " + err.Error()})
 			return
 		}
-		defer tx.Rollback()
 
-		if !isDir {
-			// 处理文件上传
-			file, err := c.FormFile("file")
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "File not provided: " + err.Error()})
-				return
-			}
-
-			// 保存文件到磁盘
-			destPath = filepath.Join(uploadDir, file.Filename)
-			if err := c.SaveUploadedFile(file, destPath); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file: " + err.Error()})
-				return
-			}
-		}
-
-		// 插入或更新 drivelist 记录
-		var existingID int64
-		err = tx.QueryRow("SELECT id FROM drivelist WHERE name=$1", meta.Name).Scan(&existingID)
+		// 将元数据存入数据库：存在则更新 capacity，否则插入新记录
+		var existingID int
+		err = s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", meta.Name).Scan(&existingID)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				// 不存在，插入新记录
-				err = tx.QueryRow("INSERT INTO drivelist (name, capacity) VALUES ($1, $2) RETURNING id",
-					meta.Name, meta.Capacity).Scan(&newID)
+				_, err = s.DB.Exec("INSERT INTO drivelist (name, capacity) VALUES ($1, $2)", meta.Name, meta.Capacity)
 				if err != nil {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert metadata: " + err.Error()})
 					return
 				}
 			} else {
+				// 查询出错
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check metadata: " + err.Error()})
 				return
 			}
 		} else {
-			// 记录已存在，更新
-			_, err = tx.Exec("UPDATE drivelist SET capacity=$1 WHERE id=$2", meta.Capacity, existingID)
+			// 记录已存在，更新容量（capacity）字段
+			_, err = s.DB.Exec("UPDATE drivelist SET capacity=$1 WHERE id=$2", meta.Capacity, existingID)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update metadata: " + err.Error()})
 				return
 			}
-			newID = existingID
-		}
-
-		// 维护闭包表关系
-		// 1. 插入自己到自己的记录（depth=0）
-		_, err = tx.Exec("INSERT INTO drivelist_closure (ancestor, descendant, depth) VALUES ($1, $1, 0) ON CONFLICT DO NOTHING", newID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert closure self-reference: " + err.Error()})
-			return
-		}
-
-		// 2. 如果有父节点，复制父节点的所有祖先关系
-		if parentID > 0 {
-			_, err = tx.Exec(`
-				INSERT INTO drivelist_closure (ancestor, descendant, depth)
-				SELECT ancestor, $1, depth + 1
-				FROM drivelist_closure
-				WHERE descendant = $2
-				ON CONFLICT DO NOTHING
-			`, newID, parentID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert closure parent relations: " + err.Error()})
-				return
-			}
-		}
-
-		// 提交事务
-		if err := tx.Commit(); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
-			return
 		}
 
 		// 打印日志并返回成功响应
-		if isDir {
-			fmt.Printf("Directory '%s' created with ID %d (parent: %d)\n", meta.Name, newID, parentID)
-		} else {
-			fmt.Printf("File '%s' uploaded to '%s' with ID %d (parent: %d). Meta: %+v\n", meta.Name, destPath, newID, parentID, meta)
-		}
-
+		fmt.Printf("File '%s' received and saved to '%s'. Meta: %+v\n", file.Filename, destPath, meta)
 		c.JSON(http.StatusOK, gin.H{
-			"message":  "Upload successful",
-			"id":       newID,
-			"filename": meta.Name,
+			"message":  "File uploaded successfully",
+			"filename": file.Filename,
 			"path":     destPath,
-			"is_dir":   isDir,
 		})
 	})
 
@@ -276,6 +216,70 @@ func (s *Server) SetupDefaultRouter() {
 			return
 		}
 
+	})
+
+	// 创建目录接口
+	r.POST("/createdir", func(c *gin.Context) {
+		path := c.Query("path")
+		if path == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'path' query parameter"})
+			return
+		}
+
+		// 解析路径，找到父节点并插入新目录节点
+		// 这里简化处理：直接插入到 drivelist，使用闭包表维护层级关系
+		// path 格式: "root/subdir/newdir"
+
+		// 1. 先检查路径是否已存在
+		var existingID int64
+		err := s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", filepath.Base(path)).Scan(&existingID)
+		if err == nil {
+			c.JSON(http.StatusOK, gin.H{"message": "Directory already exists", "id": existingID})
+			return
+		}
+
+		// 2. 插入目录节点（容量为0表示目录）
+		var newID int64
+		err = s.DB.QueryRow("INSERT INTO drivelist (name, capacity) VALUES ($1, 0) RETURNING id",
+			filepath.Base(path)).Scan(&newID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory: " + err.Error()})
+			return
+		}
+
+		// 3. 维护闭包表关系
+		// 插入自己到自己 (depth=0)
+		_, err = s.DB.Exec("INSERT INTO drivelist_closure (ancestor, descendant, depth) VALUES ($1, $1, 0)", newID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert closure: " + err.Error()})
+			return
+		}
+
+		// 4. 如果有父路径，建立父子关系
+		// 这里简化处理：如果 path 包含 "/"，则查找父目录
+		parentPath := filepath.Dir(path)
+		if parentPath != "." && parentPath != "/" {
+			var parentID int64
+			err = s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", filepath.Base(parentPath)).Scan(&parentID)
+			if err == nil {
+				// 复制父节点的所有祖先关系
+				_, err = s.DB.Exec(`
+					INSERT INTO drivelist_closure (ancestor, descendant, depth)
+					SELECT ancestor, $1, depth + 1
+					FROM drivelist_closure
+					WHERE descendant = $2
+				`, newID, parentID)
+				if err != nil {
+					log.Printf("Warning: failed to link parent closure: %v", err)
+				}
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Directory created successfully",
+			"id":      newID,
+			"path":    path,
+		})
 	})
 
 	s.Ge = r
