@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"single_drive/shared"
+	"strings"
 
 	"database/sql"
 
@@ -121,16 +122,33 @@ func (s *Server) SetupDefaultRouter() {
 			return
 		}
 
+		// 获取可选的路径字段（如 "data/subdir"）
+		userPath := c.PostForm("path")
+		// 安全检查：不允许绝对路径或上级目录引用
+		if userPath != "" {
+			if strings.Contains(userPath, "..") || strings.HasPrefix(userPath, "/") || strings.HasPrefix(userPath, "\\") {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid path: path traversal not allowed"})
+				return
+			}
+			// 清理路径
+			userPath = filepath.Clean(userPath)
+		}
+
 		// 定义服务器上的存储目录
-		// 为了安全和可移植性，我们保存在程序运行目录下的 "uploads" 文件夹
 		uploadDir := "./uploads"
-		if err := os.MkdirAll(uploadDir, os.ModePerm); err != nil {
+		destDir := uploadDir
+		if userPath != "" && userPath != "." {
+			destDir = filepath.Join(uploadDir, userPath)
+		}
+
+		// 确保目标目录存在（包括子目录）
+		if err := os.MkdirAll(destDir, os.ModePerm); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage directory: " + err.Error()})
 			return
 		}
 
 		// 将文件保存到服务器的目标路径
-		destPath := filepath.Join(uploadDir, file.Filename)
+		destPath := filepath.Join(destDir, file.Filename)
 		if err := c.SaveUploadedFile(file, destPath); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file: " + err.Error()})
 			return
