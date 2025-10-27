@@ -175,6 +175,119 @@ func (s *Server) SetupDefaultRouter() {
 		items := s.ReadItemsFromDB(s.DB)
 		c.JSON(http.StatusOK, items)
 	})
+
+	// 新增：查看 drivelist 表的完整内容（包括 ID）
+	r.GET("/debug/drivelist", func(c *gin.Context) {
+		rows, err := s.DB.Query("SELECT id, name, capacity, created_at FROM drivelist ORDER BY id")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		var items []map[string]interface{}
+		for rows.Next() {
+			var id int64
+			var name string
+			var capacity int64
+			var createdAt string
+			if err := rows.Scan(&id, &name, &capacity, &createdAt); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			items = append(items, map[string]interface{}{
+				"id":         id,
+				"name":       name,
+				"capacity":   capacity,
+				"created_at": createdAt,
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{"count": len(items), "items": items})
+	})
+
+	// 新增：查看 drivelist_closure 表内容（带层级关系）
+	r.GET("/debug/closure", func(c *gin.Context) {
+		rows, err := s.DB.Query(`
+			SELECT 
+				c.ancestor,
+				c.descendant,
+				c.depth,
+				d1.name as ancestor_name,
+				d2.name as descendant_name,
+				d2.capacity as descendant_capacity
+			FROM drivelist_closure c
+			JOIN drivelist d1 ON c.ancestor = d1.id
+			JOIN drivelist d2 ON c.descendant = d2.id
+			ORDER BY c.ancestor, c.depth, c.descendant
+		`)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		var items []map[string]interface{}
+		for rows.Next() {
+			var ancestor, descendant int64
+			var depth int
+			var ancestorName, descendantName string
+			var descendantCapacity int64
+			if err := rows.Scan(&ancestor, &descendant, &depth, &ancestorName, &descendantName, &descendantCapacity); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			items = append(items, map[string]interface{}{
+				"ancestor":            ancestor,
+				"descendant":          descendant,
+				"depth":               depth,
+				"ancestor_name":       ancestorName,
+				"descendant_name":     descendantName,
+				"descendant_capacity": descendantCapacity,
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{"count": len(items), "items": items})
+	})
+
+	// 新增：查看某个节点的子树
+	r.GET("/debug/subtree/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		rows, err := s.DB.Query(`
+			SELECT 
+				d.id,
+				d.name,
+				d.capacity,
+				c.depth
+			FROM drivelist d
+			JOIN drivelist_closure c ON d.id = c.descendant
+			WHERE c.ancestor = $1
+			ORDER BY c.depth, d.id
+		`, id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		var items []map[string]interface{}
+		for rows.Next() {
+			var nodeID int64
+			var name string
+			var capacity int64
+			var depth int
+			if err := rows.Scan(&nodeID, &name, &capacity, &depth); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			items = append(items, map[string]interface{}{
+				"id":       nodeID,
+				"name":     name,
+				"capacity": capacity,
+				"depth":    depth,
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{"root_id": id, "count": len(items), "items": items})
+	})
+
 	// 传入的是文件名，通过查询参数 ?name=
 	r.DELETE("/delete", func(c *gin.Context) {
 		name := c.Query("name")
