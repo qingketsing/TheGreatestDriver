@@ -1,16 +1,17 @@
 package server
 
 import (
+	"archive/zip"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"single_drive/shared"
 	"strings"
-
-	"database/sql"
 
 	_ "github.com/lib/pq"
 
@@ -437,6 +438,100 @@ func (s *Server) handleDelete(c *gin.Context) {
 	})
 }
 
+func (s *Server) DownloadZip(c *gin.Context, dirPath string, zipName string) error {
+	// 创建临时 zip 文件
+	tmpZipPath := filepath.Join(os.TempDir(), fmt.Sprintf("download_%s.zip", zipName))
+
+	// 创建 zip 文件
+	zipFile, err := os.Create(tmpZipPath)
+	if err != nil {
+		return fmt.Errorf("failed to create zip file: %v", err)
+	}
+	defer zipFile.Close()
+	defer os.Remove(tmpZipPath) // 发送完后删除临时文件
+
+	zipWriter := zip.NewWriter(zipFile)
+
+	// 递归添加目录中的所有文件到 zip
+	err = s.addFilesToZip(zipWriter, dirPath, "")
+	if err != nil {
+		zipWriter.Close()
+		return fmt.Errorf("failed to add files to zip: %v", err)
+	}
+
+	// 关闭 zip writer
+	if err := zipWriter.Close(); err != nil {
+		return fmt.Errorf("failed to close zip: %v", err)
+	}
+
+	// 重新打开文件用于发送
+	zipFile.Close()
+
+	// 发送 zip 文件
+	c.FileAttachment(tmpZipPath, zipName+".zip")
+	return nil
+}
+
+// addFilesToZip 递归地将目录中的文件添加到 zip
+func (s *Server) addFilesToZip(zipWriter *zip.Writer, sourcePath string, baseInZip string) error {
+	// 读取目录内容
+	entries, err := os.ReadDir(sourcePath)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		fullPath := filepath.Join(sourcePath, entry.Name())
+		zipPath := filepath.Join(baseInZip, entry.Name())
+
+		// 将路径转换为正斜杠(zip 标准)
+		zipPath = filepath.ToSlash(zipPath)
+
+		if entry.IsDir() {
+			// 递归处理子目录
+			if err := s.addFilesToZip(zipWriter, fullPath, zipPath); err != nil {
+				return err
+			}
+		} else {
+			// 添加文件到 zip
+			if err := s.addFileToZip(zipWriter, fullPath, zipPath); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// addFileToZip 添加单个文件到 zip
+func (s *Server) addFileToZip(zipWriter *zip.Writer, filePath string, nameInZip string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	header, err := zip.FileInfoHeader(fileInfo)
+	if err != nil {
+		return err
+	}
+	header.Name = nameInZip
+	header.Method = zip.Deflate
+
+	writer, err := zipWriter.CreateHeader(header)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(writer, file)
+	return err
+}
+
 func (s *Server) handleDownload(c *gin.Context) {
 	name := c.Query("name")
 	if name == "" {
@@ -445,11 +540,22 @@ func (s *Server) handleDownload(c *gin.Context) {
 	}
 	uploadDir := "./uploads"
 	filePath := filepath.Join(uploadDir, name)
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+	// 使用 ReadFileTree 读取文件树结构并返回
+	fileTree, err := shared.ReadFileTree(filePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file tree: " + err.Error()})
 		return
 	}
-	c.FileAttachment(filePath, name)
+	if fileTree.IsDir {
+		// 压缩文件夹，并返回下载
+		if err := s.DownloadZip(c, filePath, filepath.Base(name)); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to download zip: " + err.Error()})
+			return
+		}
+	} else {
+		// 返回文件内容
+		c.FileAttachment(filePath, filepath.Base(name))
+	}
 }
 
 func (s *Server) handleCreateDir(c *gin.Context) {

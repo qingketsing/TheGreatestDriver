@@ -266,6 +266,36 @@ func (c *Client) downloadFileObject(name string) error {
 	return nil
 }
 
+func (c *Client) DownloadFileTree(dirName string) error {
+	downloadURL := fmt.Sprintf("%s/downloaddir?dirname=%s", c.BaseURL, url.QueryEscape(dirName))
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: server returned %d", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	// 下载下来的文件是zip，所以需要解压
+	zipPath := "./download/" + dirName + ".zip"
+	if err := os.WriteFile(zipPath, data, 0644); err != nil {
+		return err
+	}
+	fmt.Printf("目录 %s 下载成功，已保存为 %s\n", dirName, zipPath)
+	// 解压zip文件
+	if err := shared.Unzip(zipPath, "./download/"+dirName); err != nil {
+		return err
+	}
+	defer os.Remove(zipPath) // 删除zip文件
+	fmt.Printf("目录 %s 已解压到 ./download/%s\n", dirName, dirName)
+
+	return nil
+}
+
 func main() {
 	// 创建客户端实例
 	client := NewClient("")
@@ -322,4 +352,11 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Println("目录树上传成功")
+
+	//下载文件夹示例
+	err = client.DownloadFileTree("test")
+	if err != nil {
+		log.Fatal(err)
+	}
+
 }
