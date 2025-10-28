@@ -188,8 +188,118 @@ func (s *Server) handleUpload(c *gin.Context) {
 }
 
 func (s *Server) handleList(c *gin.Context) {
-	items := s.ReadItemsFromDB(s.DB)
-	c.JSON(http.StatusOK, items)
+	// 构建文件树结构
+	tree, err := s.buildFileTree()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, tree)
+}
+
+// TreeNode 表示文件树的一个节点
+type TreeNode struct {
+	ID       int64       `json:"id"`
+	Name     string      `json:"name"`
+	Capacity int64       `json:"capacity"`
+	IsDir    bool        `json:"is_dir"`
+	Path     string      `json:"path"`
+	Children []*TreeNode `json:"children,omitempty"`
+}
+
+// buildFileTree 从数据库构建文件树
+func (s *Server) buildFileTree() (map[string]interface{}, error) {
+	// 1. 获取所有节点
+	rows, err := s.DB.Query("SELECT id, name, capacity FROM drivelist ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	nodeMap := make(map[int64]*TreeNode)
+	var allNodes []*TreeNode
+
+	for rows.Next() {
+		var id int64
+		var name string
+		var capacity int64
+		if err := rows.Scan(&id, &name, &capacity); err != nil {
+			return nil, err
+		}
+
+		node := &TreeNode{
+			ID:       id,
+			Name:     name,
+			Capacity: capacity,
+			IsDir:    capacity == 0, // 容量为0表示目录
+			Path:     name,
+			Children: []*TreeNode{},
+		}
+		nodeMap[id] = node
+		allNodes = append(allNodes, node)
+	}
+
+	// 2. 获取父子关系 (depth=1 表示直接父子关系)
+	rows, err = s.DB.Query(`
+		SELECT ancestor, descendant 
+		FROM drivelist_closure 
+		WHERE depth = 1
+		ORDER BY ancestor, descendant
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	parentChildMap := make(map[int64][]int64)
+	for rows.Next() {
+		var ancestor, descendant int64
+		if err := rows.Scan(&ancestor, &descendant); err != nil {
+			return nil, err
+		}
+		parentChildMap[ancestor] = append(parentChildMap[ancestor], descendant)
+	}
+
+	// 3. 构建树结构
+	var rootNodes []*TreeNode
+	for _, node := range allNodes {
+		children := parentChildMap[node.ID]
+		if len(children) > 0 {
+			// 有子节点
+			for _, childID := range children {
+				if childNode, ok := nodeMap[childID]; ok {
+					node.Children = append(node.Children, childNode)
+				}
+			}
+		}
+
+		// 查找该节点是否有父节点
+		hasParent := false
+		for _, childIDs := range parentChildMap {
+			for _, childID := range childIDs {
+				if childID == node.ID {
+					hasParent = true
+					break
+				}
+			}
+			if hasParent {
+				break
+			}
+		}
+
+		// 如果没有父节点，则为根节点
+		if !hasParent {
+			rootNodes = append(rootNodes, node)
+		}
+	}
+
+	// 4. 返回树结构
+	result := map[string]interface{}{
+		"total": len(allNodes),
+		"roots": rootNodes,
+	}
+
+	return result, nil
 }
 
 func (s *Server) handleDebugDrivelist(c *gin.Context) {
