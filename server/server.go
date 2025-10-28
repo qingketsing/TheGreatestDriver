@@ -100,330 +100,339 @@ func (s *Server) ReadItemsFromDB(db *sql.DB) []shared.MetaData {
 	return metalist
 }
 
-func (s *Server) SetupDefaultRouter() {
-	r := gin.Default()
-	r.GET("/", func(c *gin.Context) {
-		c.String(http.StatusOK, "Hello! This is the Single Drive server.")
-	})
+// 路由处理器方法
 
-	r.POST("/upload", func(c *gin.Context) {
-		// 从表单中获取 "meta" 字段
-		metaJSON := c.PostForm("meta")
-		var meta shared.MetaData
-		if err := json.Unmarshal([]byte(metaJSON), &meta); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid meta data: " + err.Error()})
-			return
-		}
+func (s *Server) handleIndex(c *gin.Context) {
+	c.String(http.StatusOK, "Hello! This is the Single Drive server.")
+}
 
-		// 从表单中获取文件
-		file, err := c.FormFile("file")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "File not provided: " + err.Error()})
-			return
-		}
+func (s *Server) handleUpload(c *gin.Context) {
+	// 从表单中获取 "meta" 字段
+	metaJSON := c.PostForm("meta")
+	var meta shared.MetaData
+	if err := json.Unmarshal([]byte(metaJSON), &meta); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid meta data: " + err.Error()})
+		return
+	}
 
-		// 获取可选的路径字段（如 "test/data"）
-		userPath := c.PostForm("path")
-		// 基本安全检查：不允许绝对路径或上级引用
-		if userPath != "" {
-			if strings.Contains(userPath, "..") || strings.HasPrefix(userPath, "/") || strings.HasPrefix(userPath, "\\") {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid path"})
-				return
-			}
-			// 清理路径（去除多余分隔符）
-			userPath = filepath.Clean(userPath)
-		}
+	// 从表单中获取文件
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File not provided: " + err.Error()})
+		return
+	}
 
-		// 定义服务器上的存储目录（uploads/<userPath>）
-		uploadDir := "./uploads"
-		destDir := uploadDir
-		if userPath != "" && userPath != "." {
-			destDir = filepath.Join(uploadDir, userPath)
-		}
-		// 确保目标目录存在
-		if err := os.MkdirAll(destDir, os.ModePerm); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage directory: " + err.Error()})
-			return
-		}
-
-		// 将文件保存到服务器的目标路径
-		destPath := filepath.Join(destDir, file.Filename)
-		if err := c.SaveUploadedFile(file, destPath); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file: " + err.Error()})
-			return
-		}
-
-		// 将元数据存入数据库：存在则更新 capacity，否则插入新记录
-		var existingID int
-		err = s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", meta.Name).Scan(&existingID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				// 不存在，插入新记录
-				_, err = s.DB.Exec("INSERT INTO drivelist (name, capacity) VALUES ($1, $2)", meta.Name, meta.Capacity)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert metadata: " + err.Error()})
-					return
-				}
-			} else {
-				// 查询出错
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check metadata: " + err.Error()})
-				return
-			}
-		} else {
-			// 记录已存在，更新容量（capacity）字段
-			_, err = s.DB.Exec("UPDATE drivelist SET capacity=$1 WHERE id=$2", meta.Capacity, existingID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update metadata: " + err.Error()})
-				return
-			}
-		}
-
-		// 打印日志并返回成功响应
-		fmt.Printf("File '%s' received and saved to '%s'. Meta: %+v\n", file.Filename, destPath, meta)
-		c.JSON(http.StatusOK, gin.H{
-			"message":  "File uploaded successfully",
-			"filename": file.Filename,
-			"path":     destPath,
-		})
-	})
-
-	// 新增：列出 drivelist 中的记录，方便检查数据库中是否有数据
-	r.GET("/list", func(c *gin.Context) {
-		items := s.ReadItemsFromDB(s.DB)
-		c.JSON(http.StatusOK, items)
-	})
-
-	// 新增：查看 drivelist 表的完整内容（包括 ID）
-	r.GET("/debug/drivelist", func(c *gin.Context) {
-		rows, err := s.DB.Query("SELECT id, name, capacity, created_at FROM drivelist ORDER BY id")
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		defer rows.Close()
-
-		var items []map[string]interface{}
-		for rows.Next() {
-			var id int64
-			var name string
-			var capacity int64
-			var createdAt string
-			if err := rows.Scan(&id, &name, &capacity, &createdAt); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			items = append(items, map[string]interface{}{
-				"id":         id,
-				"name":       name,
-				"capacity":   capacity,
-				"created_at": createdAt,
-			})
-		}
-		c.JSON(http.StatusOK, gin.H{"count": len(items), "items": items})
-	})
-
-	// 新增：查看 drivelist_closure 表内容（带层级关系）
-	r.GET("/debug/closure", func(c *gin.Context) {
-		rows, err := s.DB.Query(`
-			SELECT 
-				c.ancestor,
-				c.descendant,
-				c.depth,
-				d1.name as ancestor_name,
-				d2.name as descendant_name,
-				d2.capacity as descendant_capacity
-			FROM drivelist_closure c
-			JOIN drivelist d1 ON c.ancestor = d1.id
-			JOIN drivelist d2 ON c.descendant = d2.id
-			ORDER BY c.ancestor, c.depth, c.descendant
-		`)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		defer rows.Close()
-
-		var items []map[string]interface{}
-		for rows.Next() {
-			var ancestor, descendant int64
-			var depth int
-			var ancestorName, descendantName string
-			var descendantCapacity int64
-			if err := rows.Scan(&ancestor, &descendant, &depth, &ancestorName, &descendantName, &descendantCapacity); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			items = append(items, map[string]interface{}{
-				"ancestor":            ancestor,
-				"descendant":          descendant,
-				"depth":               depth,
-				"ancestor_name":       ancestorName,
-				"descendant_name":     descendantName,
-				"descendant_capacity": descendantCapacity,
-			})
-		}
-		c.JSON(http.StatusOK, gin.H{"count": len(items), "items": items})
-	})
-
-	// 新增：查看某个节点的子树
-	r.GET("/debug/subtree/:id", func(c *gin.Context) {
-		id := c.Param("id")
-		rows, err := s.DB.Query(`
-			SELECT 
-				d.id,
-				d.name,
-				d.capacity,
-				c.depth
-			FROM drivelist d
-			JOIN drivelist_closure c ON d.id = c.descendant
-			WHERE c.ancestor = $1
-			ORDER BY c.depth, d.id
-		`, id)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		defer rows.Close()
-
-		var items []map[string]interface{}
-		for rows.Next() {
-			var nodeID int64
-			var name string
-			var capacity int64
-			var depth int
-			if err := rows.Scan(&nodeID, &name, &capacity, &depth); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			items = append(items, map[string]interface{}{
-				"id":       nodeID,
-				"name":     name,
-				"capacity": capacity,
-				"depth":    depth,
-			})
-		}
-		c.JSON(http.StatusOK, gin.H{"root_id": id, "count": len(items), "items": items})
-	})
-
-	// 传入的是文件名，通过查询参数 ?name=
-	r.DELETE("/delete", func(c *gin.Context) {
-		name := c.Query("name")
-		if name == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'name' query parameter"})
-			return
-		}
-		// 删除数据库中的记录
-		result, err := s.DB.Exec("DELETE FROM drivelist WHERE name=$1", name)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete record: " + err.Error()})
-			return
-		}
-		// 删除文件对象
-		uploadDir := "./uploads"
-		filePath := filepath.Join(uploadDir, name)
-		if err := os.Remove(filePath); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete file: " + err.Error()})
-			return
-		}
-		rowsAffected, _ := result.RowsAffected()
-		c.JSON(http.StatusOK, gin.H{
-			"message":       "File and record deleted successfully",
-			"rows_affected": rowsAffected,
-		})
-	})
-	// 下载, 通过查询参数 ?name=
-	r.GET("/download", func(c *gin.Context) {
-		name := c.Query("name")
-		if name == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'name' query parameter"})
-			return
-		}
-		uploadDir := "./uploads"
-		filePath := filepath.Join(uploadDir, name)
-		c.FileAttachment(filePath, name)
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
-			return
-		}
-
-	})
-
-	// 创建目录接口
-	r.POST("/createdir", func(c *gin.Context) {
-		path := c.Query("path")
-		if path == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'path' query parameter"})
-			return
-		}
-
-		// 安全检查：防止路径穿越
-		if strings.Contains(path, "..") || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+	// 获取可选的路径字段（如 "test/data"）
+	userPath := c.PostForm("path")
+	// 基本安全检查：不允许绝对路径或上级引用
+	if userPath != "" {
+		if strings.Contains(userPath, "..") || strings.HasPrefix(userPath, "/") || strings.HasPrefix(userPath, "\\") {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid path"})
 			return
 		}
+		// 清理路径（去除多余分隔符）
+		userPath = filepath.Clean(userPath)
+	}
 
-		// 清理路径
-		path = filepath.Clean(path)
+	// 定义服务器上的存储目录（uploads/<userPath>）
+	uploadDir := "./uploads"
+	destDir := uploadDir
+	if userPath != "" && userPath != "." {
+		destDir = filepath.Join(uploadDir, userPath)
+	}
+	// 确保目标目录存在
+	if err := os.MkdirAll(destDir, os.ModePerm); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage directory: " + err.Error()})
+		return
+	}
 
-		// 在文件系统中创建实际目录
-		uploadDir := "./uploads"
-		fullPath := filepath.Join(uploadDir, path)
-		if err := os.MkdirAll(fullPath, os.ModePerm); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory on filesystem: " + err.Error()})
+	// 将文件保存到服务器的目标路径
+	destPath := filepath.Join(destDir, file.Filename)
+	if err := c.SaveUploadedFile(file, destPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file: " + err.Error()})
+		return
+	}
+
+	// 将元数据存入数据库：存在则更新 capacity，否则插入新记录
+	var existingID int
+	err = s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", meta.Name).Scan(&existingID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 不存在，插入新记录
+			_, err = s.DB.Exec("INSERT INTO drivelist (name, capacity) VALUES ($1, $2)", meta.Name, meta.Capacity)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert metadata: " + err.Error()})
+				return
+			}
+		} else {
+			// 查询出错
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check metadata: " + err.Error()})
 			return
 		}
+	} else {
+		// 记录已存在，更新容量（capacity）字段
+		_, err = s.DB.Exec("UPDATE drivelist SET capacity=$1 WHERE id=$2", meta.Capacity, existingID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update metadata: " + err.Error()})
+			return
+		}
+	}
 
-		// 数据库操作：使用完整路径作为名称
-		// 1. 先检查路径是否已存在
-		var existingID int64
-		err := s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", path).Scan(&existingID)
+	// 打印日志并返回成功响应
+	fmt.Printf("File '%s' received and saved to '%s'. Meta: %+v\n", file.Filename, destPath, meta)
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "File uploaded successfully",
+		"filename": file.Filename,
+		"path":     destPath,
+	})
+}
+
+func (s *Server) handleList(c *gin.Context) {
+	items := s.ReadItemsFromDB(s.DB)
+	c.JSON(http.StatusOK, items)
+}
+
+func (s *Server) handleDebugDrivelist(c *gin.Context) {
+	rows, err := s.DB.Query("SELECT id, name, capacity, created_at FROM drivelist ORDER BY id")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	var items []map[string]interface{}
+	for rows.Next() {
+		var id int64
+		var name string
+		var capacity int64
+		var createdAt string
+		if err := rows.Scan(&id, &name, &capacity, &createdAt); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		items = append(items, map[string]interface{}{
+			"id":         id,
+			"name":       name,
+			"capacity":   capacity,
+			"created_at": createdAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"count": len(items), "items": items})
+}
+
+func (s *Server) handleDebugClosure(c *gin.Context) {
+	rows, err := s.DB.Query(`
+		SELECT 
+			c.ancestor,
+			c.descendant,
+			c.depth,
+			d1.name as ancestor_name,
+			d2.name as descendant_name,
+			d2.capacity as descendant_capacity
+		FROM drivelist_closure c
+		JOIN drivelist d1 ON c.ancestor = d1.id
+		JOIN drivelist d2 ON c.descendant = d2.id
+		ORDER BY c.ancestor, c.depth, c.descendant
+	`)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	var items []map[string]interface{}
+	for rows.Next() {
+		var ancestor, descendant int64
+		var depth int
+		var ancestorName, descendantName string
+		var descendantCapacity int64
+		if err := rows.Scan(&ancestor, &descendant, &depth, &ancestorName, &descendantName, &descendantCapacity); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		items = append(items, map[string]interface{}{
+			"ancestor":            ancestor,
+			"descendant":          descendant,
+			"depth":               depth,
+			"ancestor_name":       ancestorName,
+			"descendant_name":     descendantName,
+			"descendant_capacity": descendantCapacity,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"count": len(items), "items": items})
+}
+
+func (s *Server) handleDebugSubtree(c *gin.Context) {
+	id := c.Param("id")
+	rows, err := s.DB.Query(`
+		SELECT 
+			d.id,
+			d.name,
+			d.capacity,
+			c.depth
+		FROM drivelist d
+		JOIN drivelist_closure c ON d.id = c.descendant
+		WHERE c.ancestor = $1
+		ORDER BY c.depth, d.id
+	`, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	var items []map[string]interface{}
+	for rows.Next() {
+		var nodeID int64
+		var name string
+		var capacity int64
+		var depth int
+		if err := rows.Scan(&nodeID, &name, &capacity, &depth); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		items = append(items, map[string]interface{}{
+			"id":       nodeID,
+			"name":     name,
+			"capacity": capacity,
+			"depth":    depth,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"root_id": id, "count": len(items), "items": items})
+}
+
+func (s *Server) handleDelete(c *gin.Context) {
+	name := c.Query("name")
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'name' query parameter"})
+		return
+	}
+	// 删除数据库中的记录
+	result, err := s.DB.Exec("DELETE FROM drivelist WHERE name=$1", name)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete record: " + err.Error()})
+		return
+	}
+	// 删除文件对象
+	uploadDir := "./uploads"
+	filePath := filepath.Join(uploadDir, name)
+	if err := os.Remove(filePath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete file: " + err.Error()})
+		return
+	}
+	rowsAffected, _ := result.RowsAffected()
+	c.JSON(http.StatusOK, gin.H{
+		"message":       "File and record deleted successfully",
+		"rows_affected": rowsAffected,
+	})
+}
+
+func (s *Server) handleDownload(c *gin.Context) {
+	name := c.Query("name")
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'name' query parameter"})
+		return
+	}
+	uploadDir := "./uploads"
+	filePath := filepath.Join(uploadDir, name)
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+	c.FileAttachment(filePath, name)
+}
+
+func (s *Server) handleCreateDir(c *gin.Context) {
+	path := c.Query("path")
+	if path == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'path' query parameter"})
+		return
+	}
+
+	// 安全检查：防止路径穿越
+	if strings.Contains(path, "..") || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid path"})
+		return
+	}
+
+	// 清理路径
+	path = filepath.Clean(path)
+
+	// 在文件系统中创建实际目录
+	uploadDir := "./uploads"
+	fullPath := filepath.Join(uploadDir, path)
+	if err := os.MkdirAll(fullPath, os.ModePerm); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory on filesystem: " + err.Error()})
+		return
+	}
+
+	// 数据库操作：使用完整路径作为名称
+	// 1. 先检查路径是否已存在
+	var existingID int64
+	err := s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", path).Scan(&existingID)
+	if err == nil {
+		c.JSON(http.StatusOK, gin.H{"message": "Directory already exists", "id": existingID})
+		return
+	}
+
+	// 2. 插入目录节点（容量为0表示目录）
+	var newID int64
+	err = s.DB.QueryRow("INSERT INTO drivelist (name, capacity) VALUES ($1, 0) RETURNING id",
+		path).Scan(&newID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory in database: " + err.Error()})
+		return
+	}
+
+	// 3. 维护闭包表关系
+	// 插入自己到自己 (depth=0)
+	_, err = s.DB.Exec("INSERT INTO drivelist_closure (ancestor, descendant, depth) VALUES ($1, $1, 0)", newID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert closure: " + err.Error()})
+		return
+	}
+
+	// 4. 如果有父路径，建立父子关系
+	parentPath := filepath.Dir(path)
+	if parentPath != "." && parentPath != "/" && parentPath != "\\" {
+		var parentID int64
+		err = s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", parentPath).Scan(&parentID)
 		if err == nil {
-			c.JSON(http.StatusOK, gin.H{"message": "Directory already exists", "id": existingID})
-			return
-		}
-
-		// 2. 插入目录节点（容量为0表示目录）
-		var newID int64
-		err = s.DB.QueryRow("INSERT INTO drivelist (name, capacity) VALUES ($1, 0) RETURNING id",
-			path).Scan(&newID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory in database: " + err.Error()})
-			return
-		}
-
-		// 3. 维护闭包表关系
-		// 插入自己到自己 (depth=0)
-		_, err = s.DB.Exec("INSERT INTO drivelist_closure (ancestor, descendant, depth) VALUES ($1, $1, 0)", newID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert closure: " + err.Error()})
-			return
-		}
-
-		// 4. 如果有父路径，建立父子关系
-		parentPath := filepath.Dir(path)
-		if parentPath != "." && parentPath != "/" && parentPath != "\\" {
-			var parentID int64
-			err = s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", parentPath).Scan(&parentID)
-			if err == nil {
-				// 复制父节点的所有祖先关系
-				_, err = s.DB.Exec(`
-					INSERT INTO drivelist_closure (ancestor, descendant, depth)
-					SELECT ancestor, $1, depth + 1
-					FROM drivelist_closure
-					WHERE descendant = $2
-				`, newID, parentID)
-				if err != nil {
-					log.Printf("Warning: failed to link parent closure: %v", err)
-				}
+			// 复制父节点的所有祖先关系
+			_, err = s.DB.Exec(`
+				INSERT INTO drivelist_closure (ancestor, descendant, depth)
+				SELECT ancestor, $1, depth + 1
+				FROM drivelist_closure
+				WHERE descendant = $2
+			`, newID, parentID)
+			if err != nil {
+				log.Printf("Warning: failed to link parent closure: %v", err)
 			}
 		}
+	}
 
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Directory created successfully",
-			"id":      newID,
-			"path":    path,
-		})
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Directory created successfully",
+		"id":      newID,
+		"path":    path,
 	})
+}
+
+func (s *Server) SetupDefaultRouter() {
+	r := gin.Default()
+
+	// 主要路由
+	r.GET("/", s.handleIndex)
+	r.POST("/upload", s.handleUpload)
+	r.GET("/list", s.handleList)
+	r.DELETE("/delete", s.handleDelete)
+	r.GET("/download", s.handleDownload)
+	r.POST("/createdir", s.handleCreateDir)
+
+	// 调试路由
+	r.GET("/debug/drivelist", s.handleDebugDrivelist)
+	r.GET("/debug/closure", s.handleDebugClosure)
+	r.GET("/debug/subtree/:id", s.handleDebugSubtree)
 
 	s.Ge = r
 }
