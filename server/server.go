@@ -558,6 +558,39 @@ func (s *Server) handleDownload(c *gin.Context) {
 	}
 }
 
+func (s *Server) handleDownloadDir(c *gin.Context) {
+	dirname := c.Query("dirname")
+	if dirname == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'dirname' query parameter"})
+		return
+	}
+
+	uploadDir := "./uploads"
+	dirPath := filepath.Join(uploadDir, dirname)
+
+	// 检查目录是否存在
+	fileInfo, err := os.Stat(dirPath)
+	if os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Directory not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to stat directory: " + err.Error()})
+		return
+	}
+
+	if !fileInfo.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Path is not a directory"})
+		return
+	}
+
+	// 压缩目录并返回
+	if err := s.DownloadZip(c, dirPath, dirname); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create zip: " + err.Error()})
+		return
+	}
+}
+
 func (s *Server) handleCreateDir(c *gin.Context) {
 	path := c.Query("path")
 	if path == "" {
@@ -643,6 +676,7 @@ func (s *Server) SetupDefaultRouter() {
 	r.GET("/list", s.handleList)
 	r.DELETE("/delete", s.handleDelete)
 	r.GET("/download", s.handleDownload)
+	r.GET("/downloaddir", s.handleDownloadDir)
 	r.POST("/createdir", s.handleCreateDir)
 
 	// 调试路由
