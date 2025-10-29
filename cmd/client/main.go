@@ -174,7 +174,7 @@ func (c *Client) UploadFileTree(ft *shared.FileTree, basePath string) error {
 
 // RefreshMetaList 从服务器获取最新的元数据列表并更新缓存
 func (c *Client) RefreshMetaList() error {
-	resp, err := http.Get(c.BaseURL + "/list")
+	resp, err := http.Get(c.BaseURL + "/list-flat")
 	if err != nil {
 		return err
 	}

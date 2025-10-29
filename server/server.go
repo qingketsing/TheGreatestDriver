@@ -198,6 +198,12 @@ func (s *Server) handleList(c *gin.Context) {
 	c.JSON(http.StatusOK, tree)
 }
 
+func (s *Server) handleListFlat(c *gin.Context) {
+	// 返回简单的平面列表（用于客户端缓存）
+	items := s.ReadItemsFromDB(s.DB)
+	c.JSON(http.StatusOK, items)
+}
+
 // TreeNode 表示文件树的一个节点
 type TreeNode struct {
 	ID       int64       `json:"id"`
@@ -754,6 +760,7 @@ func (s *Server) SetupDefaultRouter() {
 	r.GET("/", s.handleIndex)
 	r.POST("/upload", s.handleUpload)
 	r.GET("/list", s.handleList)
+	r.GET("/list-flat", s.handleListFlat)
 	r.DELETE("/delete", s.handleDelete)
 	r.GET("/download", s.handleDownload)
 	r.GET("/downloaddir", s.handleDownloadDir)
