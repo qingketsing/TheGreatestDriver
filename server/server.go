@@ -438,6 +438,86 @@ func (s *Server) handleDelete(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleDeleteDir(c *gin.Context) {
+	dirname := c.Query("dirname")
+	if dirname == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'dirname' query parameter"})
+		return
+	}
+
+	// 安全检查：防止路径穿越
+	if strings.Contains(dirname, "..") || strings.HasPrefix(dirname, "/") || strings.HasPrefix(dirname, "\\") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid dirname"})
+		return
+	}
+	cleanName := filepath.Clean(dirname)
+
+	uploadDir := "./uploads"
+	dirPath := filepath.Join(uploadDir, cleanName)
+
+	// 检查目录是否存在
+	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Directory not found"})
+		return
+	}
+
+	// 开始数据库事务
+	tx, err := s.DB.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to begin transaction: " + err.Error()})
+		return
+	}
+
+	// 首先获取该目录的 ID
+	var dirID int64
+	err = tx.QueryRow("SELECT id FROM drivelist WHERE name=$1", cleanName).Scan(&dirID)
+	if err != nil {
+		tx.Rollback()
+		if err == sql.ErrNoRows {
+			// 数据库中没有记录，但文件系统有目录，仍然删除文件系统
+			if err := os.RemoveAll(dirPath); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete directory: " + err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"message": "Directory deleted (no DB record found)"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query directory: " + err.Error()})
+		return
+	}
+
+	// 删除该目录及其所有后代节点（利用闭包表）
+	// CASCADE 会自动删除 drivelist_closure 中的相关记录
+	_, err = tx.Exec(`
+        DELETE FROM drivelist
+        WHERE id IN (
+            SELECT descendant FROM drivelist_closure WHERE ancestor = $1
+        )
+    `, dirID)
+	if err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete DB records: " + err.Error()})
+		return
+	}
+
+	// 提交事务
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
+		return
+	}
+
+	// 删除文件系统中的目录（在数据库操作成功后）
+	if err := os.RemoveAll(dirPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "DB updated but failed to delete directory: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Directory and its contents deleted successfully",
+		"path":    cleanName,
+	})
+}
+
 func (s *Server) DownloadZip(c *gin.Context, dirPath string, zipName string) error {
 	// 创建临时 zip 文件
 	tmpZipPath := filepath.Join(os.TempDir(), fmt.Sprintf("download_%s.zip", zipName))
@@ -678,6 +758,7 @@ func (s *Server) SetupDefaultRouter() {
 	r.GET("/download", s.handleDownload)
 	r.GET("/downloaddir", s.handleDownloadDir)
 	r.POST("/createdir", s.handleCreateDir)
+	r.GET("/deletedir", s.handleDeleteDir)
 
 	// 调试路由
 	r.GET("/debug/drivelist", s.handleDebugDrivelist)
