@@ -174,7 +174,7 @@ func (c *Client) UploadFileTree(ft *shared.FileTree, basePath string) error {
 
 // RefreshMetaList 从服务器获取最新的元数据列表并更新缓存
 func (c *Client) RefreshMetaList() error {
-	resp, err := http.Get(c.BaseURL + "/list")
+	resp, err := http.Get(c.BaseURL + "/list?format=simple")
 	if err != nil {
 		return err
 	}
@@ -296,6 +296,25 @@ func (c *Client) DownloadFileTree(dirName string) error {
 	return nil
 }
 
+func (c *Client) DeleteFileTree(dirName string) error {
+	delURL := fmt.Sprintf("%s/deletedir?dirname=%s", c.BaseURL, url.QueryEscape(dirName))
+	req, err := http.NewRequest(http.MethodDelete, delURL, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("delete failed: server returned %d", resp.StatusCode)
+	}
+	fmt.Printf("目录 %s 已从服务器删除\n", dirName)
+	return nil
+}
+
 func main() {
 	// 创建客户端实例
 	client := NewClient("")
@@ -360,7 +379,7 @@ func main() {
 	}
 
 	// 删除目录示例
-	err = client.DeleteFile("test")
+	err = client.DeleteFileTree("test")
 	if err != nil {
 		log.Fatal(err)
 	}
