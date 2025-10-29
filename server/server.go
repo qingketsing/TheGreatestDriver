@@ -160,10 +160,37 @@ func (s *Server) handleUpload(c *gin.Context) {
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// 不存在，插入新记录
-			_, err = s.DB.Exec("INSERT INTO drivelist (name, capacity) VALUES ($1, $2)", meta.Name, meta.Capacity)
+			var newID int64
+			err = s.DB.QueryRow("INSERT INTO drivelist (name, capacity) VALUES ($1, $2) RETURNING id",
+				meta.Name, meta.Capacity).Scan(&newID)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert metadata: " + err.Error()})
 				return
+			}
+
+			// 插入闭包表记录：自己到自己 (depth=0)
+			_, err = s.DB.Exec("INSERT INTO drivelist_closure (ancestor, descendant, depth) VALUES ($1, $1, 0)", newID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert closure for file: " + err.Error()})
+				return
+			}
+
+			// 如果文件在子目录中，建立与父目录的闭包关系
+			if userPath != "" && userPath != "." {
+				var parentID int64
+				err = s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", userPath).Scan(&parentID)
+				if err == nil {
+					// 复制父节点的所有祖先关系
+					_, err = s.DB.Exec(`
+						INSERT INTO drivelist_closure (ancestor, descendant, depth)
+						SELECT ancestor, $1, depth + 1
+						FROM drivelist_closure
+						WHERE descendant = $2
+					`, newID, parentID)
+					if err != nil {
+						log.Printf("Warning: failed to link file to parent closure: %v", err)
+					}
+				}
 			}
 		} else {
 			// 查询出错
@@ -427,19 +454,53 @@ func (s *Server) handleDelete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'name' query parameter"})
 		return
 	}
-	// 删除数据库中的记录
-	result, err := s.DB.Exec("DELETE FROM drivelist WHERE name=$1", name)
+
+	// 开始事务
+	tx, err := s.DB.Begin()
 	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to begin transaction: " + err.Error()})
+		return
+	}
+
+	// 查询文件的 ID
+	var fileID int64
+	err = tx.QueryRow("SELECT id FROM drivelist WHERE name=$1", name).Scan(&fileID)
+	if err != nil {
+		tx.Rollback()
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "File not found in database"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query file: " + err.Error()})
+		return
+	}
+
+	// 删除数据库中的记录（CASCADE 会自动删除 drivelist_closure 中的相关记录）
+	result, err := tx.Exec("DELETE FROM drivelist WHERE id=$1", fileID)
+	if err != nil {
+		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete record: " + err.Error()})
 		return
 	}
+
+	// 提交事务
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
+		return
+	}
+
 	// 删除文件对象
 	uploadDir := "./uploads"
 	filePath := filepath.Join(uploadDir, name)
 	if err := os.Remove(filePath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete file: " + err.Error()})
+		// 文件系统删除失败，但数据库已删除
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Database record deleted, but file removal failed: " + err.Error(),
+			"warning": true,
+		})
 		return
 	}
+
 	rowsAffected, _ := result.RowsAffected()
 	c.JSON(http.StatusOK, gin.H{
 		"message":       "File and record deleted successfully",
