@@ -564,6 +564,7 @@ func (s *Server) handleDeleteDir(c *gin.Context) {
             SELECT descendant FROM drivelist_closure WHERE ancestor = $1
         )
     `, dirID)
+	// 删除
 	if err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete DB records: " + err.Error()})
