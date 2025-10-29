@@ -198,12 +198,6 @@ func (s *Server) handleList(c *gin.Context) {
 	c.JSON(http.StatusOK, tree)
 }
 
-func (s *Server) handleListFlat(c *gin.Context) {
-	// 返回简单的平面列表（用于客户端缓存）
-	items := s.ReadItemsFromDB(s.DB)
-	c.JSON(http.StatusOK, items)
-}
-
 // TreeNode 表示文件树的一个节点
 type TreeNode struct {
 	ID       int64       `json:"id"`
@@ -424,24 +418,91 @@ func (s *Server) handleDelete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'name' query parameter"})
 		return
 	}
-	// 删除数据库中的记录
-	result, err := s.DB.Exec("DELETE FROM drivelist WHERE name=$1", name)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete record: " + err.Error()})
-		return
-	}
-	// 删除文件对象
+
 	uploadDir := "./uploads"
 	filePath := filepath.Join(uploadDir, name)
-	if err := os.Remove(filePath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete file: " + err.Error()})
+
+	// 检查路径是否存在
+	fileInfo, err := os.Stat(filePath)
+	if os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File or directory not found"})
 		return
 	}
-	rowsAffected, _ := result.RowsAffected()
-	c.JSON(http.StatusOK, gin.H{
-		"message":       "File and record deleted successfully",
-		"rows_affected": rowsAffected,
-	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to stat path: " + err.Error()})
+		return
+	}
+
+	// 如果是目录，需要删除所有子节点
+	if fileInfo.IsDir() {
+		// 开始数据库事务
+		tx, err := s.DB.Begin()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to begin transaction: " + err.Error()})
+			return
+		}
+
+		// 获取目录的 ID
+		var dirID int64
+		err = tx.QueryRow("SELECT id FROM drivelist WHERE name=$1", name).Scan(&dirID)
+		if err != nil && err != sql.ErrNoRows {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query directory: " + err.Error()})
+			return
+		}
+
+		// 如果在数据库中找到了该目录，删除它及其所有后代
+		if err != sql.ErrNoRows {
+			_, err = tx.Exec(`
+				DELETE FROM drivelist
+				WHERE id IN (
+					SELECT descendant FROM drivelist_closure WHERE ancestor = $1
+				)
+			`, dirID)
+			if err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete DB records: " + err.Error()})
+				return
+			}
+		}
+
+		// 提交事务
+		if err := tx.Commit(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
+			return
+		}
+
+		// 删除文件系统中的目录（递归删除）
+		if err := os.RemoveAll(filePath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete directory: " + err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Directory and its contents deleted successfully",
+			"path":    name,
+		})
+	} else {
+		// 删除单个文件
+		// 先删除数据库记录
+		result, err := s.DB.Exec("DELETE FROM drivelist WHERE name=$1", name)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete record: " + err.Error()})
+			return
+		}
+
+		// 删除文件
+		if err := os.Remove(filePath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete file: " + err.Error()})
+			return
+		}
+
+		rowsAffected, _ := result.RowsAffected()
+		c.JSON(http.StatusOK, gin.H{
+			"message":       "File deleted successfully",
+			"rows_affected": rowsAffected,
+		})
+	}
 }
 
 func (s *Server) handleDeleteDir(c *gin.Context) {
@@ -760,12 +821,11 @@ func (s *Server) SetupDefaultRouter() {
 	r.GET("/", s.handleIndex)
 	r.POST("/upload", s.handleUpload)
 	r.GET("/list", s.handleList)
-	r.GET("/list-flat", s.handleListFlat)
 	r.DELETE("/delete", s.handleDelete)
+	r.GET("/deletedir", s.handleDeleteDir)
 	r.GET("/download", s.handleDownload)
 	r.GET("/downloaddir", s.handleDownloadDir)
 	r.POST("/createdir", s.handleCreateDir)
-	r.GET("/deletedir", s.handleDeleteDir)
 
 	// 调试路由
 	r.GET("/debug/drivelist", s.handleDebugDrivelist)

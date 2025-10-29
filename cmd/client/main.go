@@ -174,7 +174,7 @@ func (c *Client) UploadFileTree(ft *shared.FileTree, basePath string) error {
 
 // RefreshMetaList 从服务器获取最新的元数据列表并更新缓存
 func (c *Client) RefreshMetaList() error {
-	resp, err := http.Get(c.BaseURL + "/list-flat")
+	resp, err := http.Get(c.BaseURL + "/list")
 	if err != nil {
 		return err
 	}
@@ -358,5 +358,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// 删除目录示例
+	err = client.DeleteFile("test")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("目录删除成功")
+
+	fmt.Printf("\n服务器文件列表: %+v\n", client.Metas)
 
 }
