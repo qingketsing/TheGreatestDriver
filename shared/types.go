@@ -139,7 +139,9 @@ func extractFile(file *zip.File, destPath string) error {
 	}
 
 	return nil
-} // NewFileObject 从路径读取文件并返回共享的类型
+}
+
+// NewFileObject 从路径读取文件并返回共享的类型
 func NewFileObject(path string) (*FileObject, *MetaData, error) {
 	f, err := os.Open(path)
 	if err != nil {

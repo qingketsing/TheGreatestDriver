@@ -19,9 +19,11 @@ import (
 )
 
 type Server struct {
-	DB       *sql.DB
-	Metalist []shared.MetaData
-	Ge       *gin.Engine
+	uploadDir string
+	host      string
+	DB        *sql.DB
+	Metalist  []shared.MetaData
+	Ge        *gin.Engine
 }
 
 func (s *Server) SetupDefaultSql() {
@@ -136,10 +138,9 @@ func (s *Server) handleUpload(c *gin.Context) {
 	}
 
 	// 定义服务器上的存储目录（uploads/<userPath>）
-	uploadDir := "./uploads"
-	destDir := uploadDir
+	destDir := s.uploadDir
 	if userPath != "" && userPath != "." {
-		destDir = filepath.Join(uploadDir, userPath)
+		destDir = filepath.Join(s.uploadDir, userPath)
 	}
 	// 确保目标目录存在
 	if err := os.MkdirAll(destDir, os.ModePerm); err != nil {
@@ -490,8 +491,7 @@ func (s *Server) handleDelete(c *gin.Context) {
 	}
 
 	// 删除文件对象
-	uploadDir := "./uploads"
-	filePath := filepath.Join(uploadDir, name)
+	filePath := filepath.Join(s.uploadDir, name)
 	if err := os.Remove(filePath); err != nil {
 		// 文件系统删除失败，但数据库已删除
 		c.JSON(http.StatusOK, gin.H{
@@ -522,8 +522,7 @@ func (s *Server) handleDeleteDir(c *gin.Context) {
 	}
 	cleanName := filepath.Clean(dirname)
 
-	uploadDir := "./uploads"
-	dirPath := filepath.Join(uploadDir, cleanName)
+	dirPath := filepath.Join(s.uploadDir, cleanName)
 
 	// 检查目录是否存在
 	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
@@ -689,8 +688,7 @@ func (s *Server) handleDownload(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'name' query parameter"})
 		return
 	}
-	uploadDir := "./uploads"
-	filePath := filepath.Join(uploadDir, name)
+	filePath := filepath.Join(s.uploadDir, name)
 	// 使用 ReadFileTree 读取文件树结构并返回
 	fileTree, err := shared.ReadFileTree(filePath)
 	if err != nil {
@@ -716,8 +714,7 @@ func (s *Server) handleDownloadDir(c *gin.Context) {
 		return
 	}
 
-	uploadDir := "./uploads"
-	dirPath := filepath.Join(uploadDir, dirname)
+	dirPath := filepath.Join(s.uploadDir, dirname)
 
 	// 检查目录是否存在
 	fileInfo, err := os.Stat(dirPath)
@@ -759,8 +756,7 @@ func (s *Server) handleCreateDir(c *gin.Context) {
 	path = filepath.Clean(path)
 
 	// 在文件系统中创建实际目录
-	uploadDir := "./uploads"
-	fullPath := filepath.Join(uploadDir, path)
+	fullPath := filepath.Join(s.uploadDir, path)
 	if err := os.MkdirAll(fullPath, os.ModePerm); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory on filesystem: " + err.Error()})
 		return
@@ -818,6 +814,46 @@ func (s *Server) handleCreateDir(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleRename(c *gin.Context) {
+	// TODO
+}
+
+func (s *Server) handleMove(c *gin.Context) {
+	// TODO
+}
+
+func (s *Server) handleCopy(c *gin.Context) {
+	// TODO
+}
+
+func (s *Server) handleGetInfo(c *gin.Context) {
+	// TODO
+}
+
+func (s *Server) handleBatchDelete(c *gin.Context) {
+	// TODO
+}
+
+func (s *Server) handleBatchDownload(c *gin.Context) {
+	// TODO
+}
+
+func (s *Server) handleSearch(c *gin.Context) {
+	// TODO
+}
+
+func (s *Server) handleFilterByType(c *gin.Context) {
+	// TODO
+}
+
+func (s *Server) handleFilterByDate(c *gin.Context) {
+	// TODO
+}
+
+func (s *Server) handleFilterBySize(c *gin.Context) {
+	// TODO
+}
+
 func (s *Server) SetupDefaultRouter() {
 	r := gin.Default()
 
@@ -831,6 +867,35 @@ func (s *Server) SetupDefaultRouter() {
 	r.GET("/downloaddir", s.handleDownloadDir)
 	r.POST("/createdir", s.handleCreateDir)
 
+	// 重命名文件/目录
+	r.PUT("/rename", s.handleRename)
+	// 移动文件/目录
+	r.PUT("/move", s.handleMove)
+	// 复制文件/目录
+	r.POST("/copy", s.handleCopy)
+	// 获取文件/目录详细信息
+	r.GET("/info", s.handleGetInfo)
+	// 批量删除
+	r.DELETE("/batch-delete", s.handleBatchDelete)
+	// 批量下载（打包成zip）
+	r.POST("/batch-download", s.handleBatchDownload)
+
+	// 搜索文件
+	r.GET("/search", s.handleSearch)
+	// 按类型过滤（图片、视频、文档等）
+	r.GET("/filter/type", s.handleFilterByType)
+	// 按时间范围过滤
+	r.GET("/filter/date", s.handleFilterByDate)
+	// 按大小过滤
+	r.GET("/filter/size", s.handleFilterBySize)
+
+	// 	// 断点续传
+	// r.POST("/upload/chunk", s.handleChunkUpload)
+	// // 秒传（文件哈希检查）
+	// r.POST("/upload/quick", s.handleQuickUpload)
+	// // 获取上传进度
+	// r.GET("/upload/progress/:uploadId", s.handleGetUploadProgress)
+
 	// 调试路由
 	r.GET("/debug/drivelist", s.handleDebugDrivelist)
 	r.GET("/debug/closure", s.handleDebugClosure)
@@ -841,6 +906,12 @@ func (s *Server) SetupDefaultRouter() {
 
 func InitServer() *Server {
 	s := &Server{}
+	s.host = "localhost:8080"
+	s.uploadDir = "./uploads"
+	// 确保上传目录存在
+	if err := os.MkdirAll(s.uploadDir, os.ModePerm); err != nil {
+		log.Fatalf("Failed to create upload directory: %v", err)
+	}
 	s.SetupDefaultSql()
 	s.SetupDefaultRouter()
 	return s
