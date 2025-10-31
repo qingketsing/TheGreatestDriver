@@ -815,19 +815,53 @@ func (s *Server) handleCreateDir(c *gin.Context) {
 }
 
 func (s *Server) handleRename(c *gin.Context) {
-	// TODO
+	// 首先修改文件名字
+	oldName := c.Query("oldName")
+	newName := c.Query("newName")
+	if oldName == "" || newName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'oldName' or 'newName' query parameter"})
+		return
+	}
+	oldPath := filepath.Join(s.uploadDir, oldName)
+	newPath := filepath.Join(s.uploadDir, newName)
+	if err := os.Rename(oldPath, newPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to rename file: " + err.Error()})
+		return
+	}
+	// 然后更新数据库记录
+	_, err := s.DB.Exec("UPDATE drivelist SET name=$1 WHERE name=$2", newName, oldName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update database record:" + err.Error()})
+		return
+	}
+	// 对Closure Table不需要额外操作，因为文件ID未变，只有名称变更
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "File renamed successfully",
+		"old_name": oldName,
+		"new_name": newName,
+	})
 }
 
 func (s *Server) handleMove(c *gin.Context) {
 	// TODO
 }
 
-func (s *Server) handleCopy(c *gin.Context) {
-	// TODO
-}
-
 func (s *Server) handleGetInfo(c *gin.Context) {
-	// TODO
+	filename := c.Query("name")
+	filepath := filepath.Join(s.uploadDir, filename)
+	info, err := os.Stat(filepath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get file info: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"name":         info.Name(),
+		"size":         info.Size(),
+		"mode":         info.Mode().String(),
+		"mod_time":     info.ModTime(),
+		"is_directory": info.IsDir(),
+	})
 }
 
 func (s *Server) handleBatchDelete(c *gin.Context) {
@@ -871,8 +905,6 @@ func (s *Server) SetupDefaultRouter() {
 	r.PUT("/rename", s.handleRename)
 	// 移动文件/目录
 	r.PUT("/move", s.handleMove)
-	// 复制文件/目录
-	r.POST("/copy", s.handleCopy)
 	// 获取文件/目录详细信息
 	r.GET("/info", s.handleGetInfo)
 	// 批量删除

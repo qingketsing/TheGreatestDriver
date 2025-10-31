@@ -20,6 +20,16 @@ single_drive/
 ├── client/                    # 客户端实现（预留）
 ├── shared/
 │   └── types.go              # 共享数据结构和工具函数
+├── frontend/                  # 前端 Web 应用（React + TypeScript）
+│   ├── src/
+│   │   ├── components/       # React 组件
+│   │   ├── pages/           # 页面组件
+│   │   ├── services/        # API 服务
+│   │   ├── types/           # TypeScript 类型定义
+│   │   └── utils/           # 工具函数
+│   ├── package.json         # 前端依赖配置
+│   ├── vite.config.ts       # Vite 构建配置
+│   └── start.ps1            # 前端启动脚本
 ├── uploads/                  # 服务端文件存储目录
 ├── download/                 # 下载目录（客户端）
 └── test/                     # 测试数据目录
@@ -597,6 +607,153 @@ sudo journalctl -u single-drive -f
 ### 3. 修改监听端口
 
 编辑 `cmd/server/main.go`，将 `:8000` 改为其他端口
+
+---
+
+---
+
+## 前端 Web 应用
+
+### 技术栈
+
+- **React 18** - 现代化 UI 框架
+- **TypeScript** - 类型安全的 JavaScript
+- **Vite** - 快速的前端构建工具
+- **Ant Design 5** - 企业级 UI 组件库
+- **React Router** - 单页应用路由
+- **Axios** - HTTP 请求库
+
+### 功能特性
+
+✨ **文件管理**
+- 📁 文件和文件夹的浏览、上传、下载、删除、重命名
+- 🌲 支持多层级文件夹导航
+- 📊 列表视图和网格视图自由切换
+- 🔍 文件搜索和类型过滤
+
+✨ **上传功能**
+- 📤 拖拽上传支持
+- 📦 批量上传文件
+- 📈 实时显示上传进度
+- 📂 支持指定目录上传
+
+✨ **用户体验**
+- 🎨 基于 Ant Design 的现代化界面
+- 📱 响应式设计，适配各种屏幕
+- ⚡ 快速的加载和交互体验
+- 🔄 实时刷新文件列表
+
+### 前端部署
+
+#### 1. 安装 Node.js
+
+**Windows:**
+- 下载并安装 Node.js LTS 版本: https://nodejs.org/
+- 推荐版本：Node.js 18 或更高
+
+**macOS:**
+```bash
+brew install node
+```
+
+#### 2. 安装依赖
+
+```powershell
+# 进入前端目录
+cd frontend
+
+# 安装依赖
+npm install
+```
+
+#### 3. 启动前端开发服务器
+
+**方式一：使用启动脚本（推荐）**
+```powershell
+# Windows PowerShell
+.\start.ps1
+```
+
+**方式二：手动启动**
+```powershell
+npm run dev
+```
+
+前端将在 `http://localhost:12000` 启动
+
+#### 4. 构建生产版本
+
+```powershell
+npm run build
+```
+
+构建产物将输出到 `dist/` 目录
+
+### 完整启动流程
+
+1. **启动后端服务**
+```bash
+cd cmd/server
+go run main.go
+```
+后端服务运行在 `http://localhost:8000`
+
+2. **启动前端服务**
+```powershell
+cd frontend
+.\start.ps1
+```
+前端应用运行在 `http://localhost:12000`
+
+3. **访问应用**
+打开浏览器访问 `http://localhost:12000`
+
+### 前端 API 配置
+
+前端通过 Vite 代理访问后端 API，配置在 `frontend/vite.config.ts`：
+
+```typescript
+server: {
+  proxy: {
+    '/api': {
+      target: 'http://localhost:8000',
+      changeOrigin: true,
+      rewrite: (path) => path.replace(/^\/api/, ''),
+    },
+  },
+}
+```
+
+如果修改了后端端口，需要同步修改此配置。
+
+### 前端页面说明
+
+1. **主页面** (`/`)
+   - 文件浏览和管理
+   - 面包屑导航
+   - 工具栏（新建、上传、刷新、视图切换）
+
+2. **文件列表视图**
+   - 表格展示，支持排序
+   - 显示文件名、类型、大小、修改时间
+   - 右键菜单：下载、重命名、删除
+
+3. **文件网格视图**
+   - 卡片式展示
+   - 大图标显示文件类型
+   - 适合图片和媒体文件浏览
+
+4. **上传模态框**
+   - 拖拽上传区域
+   - 批量上传队列
+   - 实时进度显示
+
+### 开发建议
+
+- **开发模式**: 使用 `npm run dev` 启动热重载开发服务器
+- **代码检查**: 使用 `npm run lint` 进行代码规范检查
+- **类型检查**: TypeScript 提供完整的类型安全
+- **组件复用**: 所有组件都在 `src/components` 目录下
 
 ---
 

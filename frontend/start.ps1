@@ -26,7 +26,7 @@ if (!(Test-Path "node_modules")) {
 
 # 启动开发服务器
 Write-Host "`n启动开发服务器..." -ForegroundColor Cyan
-Write-Host "前端将运行在: http://localhost:3000" -ForegroundColor Yellow
-Write-Host "请确保后端服务运行在: http://localhost:8080`n" -ForegroundColor Yellow
+Write-Host "前端将运行在: http://localhost:12000" -ForegroundColor Yellow
+Write-Host "请确保后端服务运行在: http://localhost:8000`n" -ForegroundColor Yellow
 
 npm run dev

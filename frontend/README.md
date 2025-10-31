@@ -35,7 +35,7 @@ npm install
 npm run dev
 ```
 
-应用将在 http://localhost:3000 启动
+应用将在 http://localhost:12000 启动
 
 ### 构建生产版本
 
@@ -74,7 +74,7 @@ src/
 server: {
   proxy: {
     '/api': {
-      target: 'http://localhost:8080',
+      target: 'http://localhost:8000',
       changeOrigin: true,
       rewrite: (path) => path.replace(/^\/api/, ''),
     },
@@ -82,7 +82,7 @@ server: {
 }
 ```
 
-确保后端服务运行在 `http://localhost:8080`
+确保后端服务运行在 `http://localhost:8000`
 
 ## 主要功能
 

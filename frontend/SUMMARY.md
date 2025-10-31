@@ -156,7 +156,7 @@ cd frontend
 npm run dev
 ```
 
-访问: http://localhost:3000
+访问: http://localhost:12000
 
 ### 生产构建
 ```powershell
@@ -167,8 +167,8 @@ npm run preview
 ## ⚙️ 配置说明
 
 ### Vite 配置 (vite.config.ts)
-- API 代理到 `http://localhost:8080`
-- 端口设置为 3000
+- API 代理到 `http://localhost:8000`
+- 端口设置为 12000
 - 路径别名 `@` 指向 `./src`
 
 ### TypeScript 配置 (tsconfig.json)
@@ -180,8 +180,8 @@ npm run preview
 
 前端通过 Vite 代理访问后端：
 ```
-前端请求: http://localhost:3000/api/list
-实际请求: http://localhost:8080/list
+前端请求: http://localhost:12000/api/list
+实际请求: http://localhost:8000/list
 ```
 
 ## 📋 待实现功能（可选扩展）
