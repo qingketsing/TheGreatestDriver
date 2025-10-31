@@ -1,0 +1,114 @@
+.main-layout {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.main-header {
+  background: #fff;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  z-index: 10;
+  height: 64px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 200px;
+}
+
+.logo-icon {
+  font-size: 28px;
+  color: #1890ff;
+}
+
+.logo-text {
+  font-size: 20px;
+  font-weight: 600;
+  color: #262626;
+}
+
+.header-center {
+  flex: 1;
+  max-width: 600px;
+  margin: 0 40px;
+}
+
+.search-input {
+  border-radius: 24px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  min-width: 120px;
+  justify-content: flex-end;
+}
+
+.header-icon {
+  font-size: 20px;
+  color: #595959;
+  cursor: pointer;
+  transition: color 0.3s;
+}
+
+.header-icon:hover {
+  color: #1890ff;
+}
+
+.user-avatar {
+  background-color: #1890ff;
+}
+
+.main-sider {
+  background: #fff;
+  border-right: 1px solid #f0f0f0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.side-menu {
+  border-right: none;
+  flex: 1;
+}
+
+.storage-info {
+  padding: 20px 16px;
+  border-top: 1px solid #f0f0f0;
+  background: #fafafa;
+}
+
+.storage-text {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin-bottom: 8px;
+}
+
+.storage-bar {
+  height: 6px;
+  background: #e8e8e8;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.storage-used {
+  height: 100%;
+  background: linear-gradient(90deg, #1890ff, #52c41a);
+  transition: width 0.3s;
+}
+
+.main-content-layout {
+  background: #f5f5f5;
+}
+
+.main-content {
+  margin: 0;
+  padding: 0;
+  height: calc(100vh - 64px);
+  overflow: auto;
+}

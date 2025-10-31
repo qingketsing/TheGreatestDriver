@@ -1,0 +1,40 @@
+.home-page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+.page-header {
+  padding: 16px 24px;
+  border-bottom: 1px solid #f0f0f0;
+  background: #fff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.breadcrumb {
+  font-size: 14px;
+}
+
+.breadcrumb span {
+  color: #262626;
+  transition: color 0.3s;
+}
+
+.breadcrumb span:hover {
+  color: #1890ff;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-content {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 24px;
+}

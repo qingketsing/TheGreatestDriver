@@ -1,0 +1,18 @@
+.file-list-table {
+  background: #fff;
+}
+
+.file-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-name {
+  color: #262626;
+  font-size: 14px;
+}
+
+.file-name-cell:hover .file-name {
+  color: #1890ff;
+}
