@@ -378,13 +378,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 删除目录示例
-	err = client.DeleteFileTree("test")
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("目录删除成功")
-
 	fmt.Printf("\n服务器文件列表: %+v\n", client.Metas)
 
 }

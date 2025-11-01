@@ -843,7 +843,203 @@ func (s *Server) handleRename(c *gin.Context) {
 }
 
 func (s *Server) handleMove(c *gin.Context) {
-	// TODO
+	// 把文件从一个目录移动到另一个目录
+	// oldpath: 原文件/文件夹路径（如 "folder1/file.txt"）
+	// newpath: 新的父目录路径（如 "folder2"）
+	oldPath := c.Query("oldpath")
+	newParentPath := c.Query("newparent")
+
+	if oldPath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'oldpath' query parameter"})
+		return
+	}
+
+	// 安全检查
+	if strings.Contains(oldPath, "..") || strings.Contains(newParentPath, "..") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid path: contains '..'"})
+		return
+	}
+
+	// 清理路径
+	oldPath = filepath.Clean(oldPath)
+	if newParentPath != "" {
+		newParentPath = filepath.Clean(newParentPath)
+	}
+
+	// 开始数据库事务
+	tx, err := s.DB.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to begin transaction: " + err.Error()})
+		return
+	}
+	defer tx.Rollback() // 如果没有 commit，则回滚
+
+	// 1. 获取要移动的节点 ID
+	var nodeID int64
+	err = tx.QueryRow("SELECT id FROM drivelist WHERE name=$1", oldPath).Scan(&nodeID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Source file/folder not found in database"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query source: " + err.Error()})
+		return
+	}
+
+	// 2. 构建新路径（保留文件名）
+	fileName := filepath.Base(oldPath)
+	var newPath string
+	var newParentID int64
+
+	if newParentPath == "" || newParentPath == "." {
+		// 移动到根目录
+		newPath = fileName
+		newParentID = 0 // 标记为根目录
+	} else {
+		// 移动到指定目录
+		newPath = filepath.Join(newParentPath, fileName)
+
+		// 获取新父目录的 ID
+		err = tx.QueryRow("SELECT id FROM drivelist WHERE name=$1", newParentPath).Scan(&newParentID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Target parent directory not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query target parent: " + err.Error()})
+			return
+		}
+	}
+
+	// 3. 检查新路径是否已存在
+	var existingID int64
+	err = tx.QueryRow("SELECT id FROM drivelist WHERE name=$1", newPath).Scan(&existingID)
+	if err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "Target path already exists"})
+		return
+	} else if err != sql.ErrNoRows {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check target path: " + err.Error()})
+		return
+	}
+
+	// 4. 移动文件系统中的文件/文件夹
+	oldFullPath := filepath.Join(s.uploadDir, oldPath)
+	newFullPath := filepath.Join(s.uploadDir, newPath)
+
+	// 确保新父目录存在
+	if newParentPath != "" && newParentPath != "." {
+		newParentFullPath := filepath.Join(s.uploadDir, newParentPath)
+		if err := os.MkdirAll(newParentFullPath, os.ModePerm); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create target directory: " + err.Error()})
+			return
+		}
+	}
+
+	if err := os.Rename(oldFullPath, newFullPath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to move file: " + err.Error()})
+		return
+	}
+
+	// 5. 更新数据库中的路径
+	_, err = tx.Exec("UPDATE drivelist SET name=$1 WHERE id=$2", newPath, nodeID)
+	if err != nil {
+		// 回滚文件系统操作
+		os.Rename(newFullPath, oldFullPath)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update database path: " + err.Error()})
+		return
+	}
+
+	// 6. 更新闭包表关系
+	// 6.1 删除与旧父节点的所有祖先关系（保留自己到自己的关系）
+	_, err = tx.Exec(`
+		DELETE FROM drivelist_closure
+		WHERE descendant IN (
+			SELECT descendant FROM drivelist_closure WHERE ancestor = $1
+		)
+		AND ancestor IN (
+			SELECT ancestor FROM drivelist_closure 
+			WHERE descendant = $1 AND ancestor != descendant
+		)
+	`, nodeID)
+	if err != nil {
+		// 回滚文件系统操作
+		os.Rename(newFullPath, oldFullPath)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete old closure relations: " + err.Error()})
+		return
+	}
+
+	// 6.2 如果有新父节点，建立新的祖先关系
+	if newParentID != 0 {
+		// 获取要移动的节点及其所有后代
+		_, err = tx.Exec(`
+			INSERT INTO drivelist_closure (ancestor, descendant, depth)
+			SELECT p.ancestor, c.descendant, p.depth + c.depth + 1
+			FROM drivelist_closure p
+			CROSS JOIN drivelist_closure c
+			WHERE p.descendant = $1
+			AND c.ancestor = $2
+		`, newParentID, nodeID)
+		if err != nil {
+			// 回滚文件系统操作
+			os.Rename(newFullPath, oldFullPath)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create new closure relations: " + err.Error()})
+			return
+		}
+	}
+
+	// 7. 如果移动的是目录，需要更新其所有子节点的路径
+	// 获取所有后代节点
+	rows, err := tx.Query(`
+		SELECT d.id, d.name
+		FROM drivelist d
+		JOIN drivelist_closure c ON d.id = c.descendant
+		WHERE c.ancestor = $1 AND c.descendant != $1
+		ORDER BY c.depth
+	`, nodeID)
+	if err != nil {
+		os.Rename(newFullPath, oldFullPath)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query descendants: " + err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	// 更新每个子节点的路径
+	for rows.Next() {
+		var childID int64
+		var childOldPath string
+		if err := rows.Scan(&childID, &childOldPath); err != nil {
+			os.Rename(newFullPath, oldFullPath)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scan child: " + err.Error()})
+			return
+		}
+
+		// 计算新的子路径
+		relPath := strings.TrimPrefix(childOldPath, oldPath)
+		relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
+		childNewPath := filepath.Join(newPath, relPath)
+
+		// 更新子节点路径
+		_, err = tx.Exec("UPDATE drivelist SET name=$1 WHERE id=$2", childNewPath, childID)
+		if err != nil {
+			os.Rename(newFullPath, oldFullPath)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update child path: " + err.Error()})
+			return
+		}
+	}
+
+	// 8. 提交事务
+	if err := tx.Commit(); err != nil {
+		// 回滚文件系统操作
+		os.Rename(newFullPath, oldFullPath)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "File/folder moved successfully",
+		"old_path": oldPath,
+		"new_path": newPath,
+	})
 }
 
 func (s *Server) handleGetInfo(c *gin.Context) {
