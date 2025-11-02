@@ -1,10 +1,55 @@
-# Single Drive - 分布式文件存储系统
+# Single Drive - 云存储文件管理系统
 
-## 项目简介
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Go Version](https://img.shields.io/badge/Go-1.16+-00ADD8?logo=go)](https://golang.org/)
+[![React Version](https://img.shields.io/badge/React-18.2-61DAFB?logo=react)](https://reactjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.2-3178C6?logo=typescript)](https://www.typescriptlang.org/)
 
-Single Drive 是一个基于 Go 语言开发的分布式文件存储系统，支持文件的上传、下载、删除、目录管理等功能。系统使用 PostgreSQL 数据库存储文件元数据，采用闭包表（Closure Table）设计来维护文件树结构，实现高效的层级查询。
+## 📋 项目简介
 
-## 文件树结构
+Single Drive 是一个现代化的云存储文件管理系统，采用前后端分离架构。后端使用 Go + Gin + PostgreSQL 构建高性能 RESTful API，前端使用 React + TypeScript + Ant Design 打造类似 OneDrive 的用户界面。系统采用闭包表（Closure Table）设计维护文件树结构，支持高效的层级查询和文件管理操作。
+
+### ✨ 主要特性
+
+**后端特性**：
+- 🚀 高性能 RESTful API（基于 Gin 框架）
+- 📦 PostgreSQL 数据库存储元数据
+- 🌲 闭包表实现高效文件树管理
+- 📁 完整的文件操作（上传、下载、删除、重命名、移动）
+- 📂 目录管理（创建、删除、遍历）
+- 🔐 路径安全检查，防止路径穿越攻击
+- 💾 事务处理保证数据一致性
+- 🗜️ 文件夹自动打包为 ZIP 下载
+
+**前端特性**：
+- 🎨 现代化 UI 设计（基于 Ant Design 5）
+- 📊 列表视图和网格视图自由切换
+- ⬆️ 拖拽上传，支持批量上传
+- 📈 实时上传进度显示
+- 🗂️ 面包屑导航，快速目录切换
+- 🖱️ 右键菜单快捷操作
+- 📱 响应式设计，适配各种屏幕
+- ⚡ Vite 构建，快速热更新
+
+## 🏗️ 技术栈
+
+### 后端
+- **语言**: Go 1.16+
+- **Web 框架**: Gin
+- **数据库**: PostgreSQL
+- **ORM**: database/sql (原生)
+- **文件处理**: archive/zip
+
+### 前端
+- **框架**: React 18.2
+- **语言**: TypeScript 5.2
+- **构建工具**: Vite 5.0
+- **UI 库**: Ant Design 5.12
+- **路由**: React Router 6
+- **HTTP 客户端**: Axios 1.6
+- **日期处理**: Day.js
+
+## 📁 项目结构
 
 ```
 single_drive/
@@ -53,21 +98,690 @@ single_drive/
   - `FileTree`: 文件树结构
   - 文件树读取和压缩/解压工具函数
 
-### 数据库设计
+## 🗄️ 数据库设计
 
-系统使用两个主要表：
+### 数据表结构
 
-1. **`drivelist`**: 存储文件和目录的基本信息
-   - `id`: 主键，自增
-   - `name`: 文件/目录路径
-   - `capacity`: 文件大小（目录为 0）
-   - `created_at`: 创建时间
+#### 1. drivelist（文件元数据表）
+```sql
+CREATE TABLE drivelist (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,              -- 文件/目录完整路径
+    capacity BIGINT NOT NULL,         -- 文件大小（目录为0）
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+```
 
-2. **`drivelist_closure`**: 闭包表，存储文件树的层级关系
-   - `ancestor`: 祖先节点 ID
-   - `descendant`: 后代节点 ID
-   - `depth`: 层级深度（0 表示自己）
-   - 外键级联删除，自动维护关系完整性
+#### 2. drivelist_closure（闭包表）
+```sql
+CREATE TABLE drivelist_closure (
+    ancestor INTEGER NOT NULL,        -- 祖先节点ID
+    descendant INTEGER NOT NULL,      -- 后代节点ID
+    depth INT NOT NULL,               -- 层级深度（0表示自己）
+    created_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (ancestor, descendant),
+    FOREIGN KEY (ancestor) REFERENCES drivelist(id) ON DELETE CASCADE,
+    FOREIGN KEY (descendant) REFERENCES drivelist(id) ON DELETE CASCADE
+);
+
+-- 性能优化索引
+CREATE INDEX idx_closure_ancestor ON drivelist_closure(ancestor);
+CREATE INDEX idx_closure_descendant ON drivelist_closure(descendant);
+CREATE INDEX idx_closure_depth ON drivelist_closure(depth);
+```
+
+### 闭包表优势
+
+- ✅ **高效查询**: O(1) 时间复杂度查询所有祖先/后代
+- ✅ **简化操作**: 移动/删除节点时自动维护关系
+- ✅ **级联删除**: 利用外键约束自动清理
+- ✅ **支持任意深度**: 不受树深度限制
+
+### 核心文件说明
+
+**后端核心**：
+- `cmd/server/main.go` - 服务端启动入口（监听 8000 端口）
+- `server/server.go` - 核心业务逻辑（约 1000 行代码）
+  - 数据库连接和初始化
+  - RESTful API 路由定义
+  - 文件上传/下载/删除处理
+  - 目录管理和文件树构建
+  - 闭包表维护逻辑
+- `shared/types.go` - 共享数据结构和工具函数
+
+**前端核心**：
+- `frontend/src/App.tsx` - 主应用组件
+- `frontend/src/components/Layout/MainLayout.tsx` - 布局框架
+- `frontend/src/pages/HomePage.tsx` - 文件管理主页面
+- `frontend/src/components/FileList/` - 列表和网格视图
+- `frontend/src/components/Upload/` - 上传组件
+- `frontend/src/services/api.ts` - API 服务封装（15+ 接口）
+- `frontend/src/utils/helpers.ts` - 工具函数库
+
+## 🚀 快速开始
+
+### 前置要求
+
+**后端**：
+- Go 1.16 或更高版本
+- PostgreSQL 数据库
+
+**前端**：
+- Node.js 18 或更高版本
+- npm 或 yarn
+
+### 安装步骤
+
+#### 1. 克隆项目
+
+```bash
+git clone https://github.com/qingketsing/TheGreatestDriver.git
+cd single_drive
+```
+
+#### 2. 配置数据库
+
+**安装 PostgreSQL**：
+
+Windows: https://www.postgresql.org/download/windows/
+
+macOS:
+```bash
+brew install postgresql
+brew services start postgresql
+```
+
+**创建数据库**：
+
+```bash
+# 连接到 PostgreSQL
+psql -U postgres
+
+# 在 psql 命令行中执行
+CREATE DATABASE tododb;
+\q
+```
+
+**配置连接信息**：
+
+编辑 `server/server.go`（约第 33 行）：
+```go
+db, err := sql.Open("postgres", 
+    "host=localhost port=5432 user=postgres password=你的密码 dbname=tododb sslmode=disable")
+```
+
+#### 3. 启动后端服务
+
+```bash
+cd cmd/server
+go run main.go
+```
+
+看到以下输出表示成功：
+```
+数据库连接成功
+确保表 drivelist 存在
+确保表 drivelist_closure 存在
+确保 drivelist_closure 索引存在
+[GIN-debug] Listening and serving HTTP on :8000
+```
+
+后端 API: `http://localhost:8000`
+
+#### 4. 启动前端服务
+
+打开新的终端窗口：
+
+```powershell
+cd frontend
+
+# 首次运行需要安装依赖
+npm install
+
+# 启动开发服务器
+npm run dev
+# 或使用启动脚本
+.\start.ps1
+```
+
+看到以下输出表示成功：
+```
+➜  Local:   http://localhost:12000/
+```
+
+前端应用: `http://localhost:12000`
+
+#### 5. 访问应用
+
+打开浏览器访问: **http://localhost:12000**
+
+### 生产环境部署
+
+#### 后端编译
+
+```bash
+cd cmd/server
+go build -o single_drive_server
+./single_drive_server
+```
+
+#### 前端构建
+
+```bash
+cd frontend
+npm run build
+# 构建产物在 dist/ 目录
+```
+
+#### 配置外网访问
+
+**修改前端配置** (`frontend/vite.config.ts`)：
+```typescript
+server: {
+  host: '0.0.0.0',  // 允许外网访问
+  port: 12000,
+}
+```
+
+**开放防火墙端口**：
+```bash
+# Linux (firewalld)
+sudo firewall-cmd --zone=public --add-port=8000/tcp --permanent
+sudo firewall-cmd --zone=public --add-port=12000/tcp --permanent
+sudo firewall-cmd --reload
+
+# 或 ufw
+sudo ufw allow 8000/tcp
+sudo ufw allow 12000/tcp
+```
+
+**云服务器安全组**：在云服务商控制台开放 8000 和 12000 端口
+
+## 📡 API 文档
+
+### 基础信息
+- **Base URL**: `http://localhost:8000`
+- **Content-Type**: `application/json` (除文件上传外)
+
+### 文件操作
+
+#### 上传文件
+```http
+POST /upload
+Content-Type: multipart/form-data
+
+Parameters:
+- file: 文件对象 (required)
+- meta: JSON字符串 {"name": "path/to/file.txt", "capacity": 1024}
+- path: 上传目录路径 (optional)
+
+Response:
+{
+  "message": "File uploaded successfully",
+  "filename": "file.txt",
+  "path": "/uploads/path/to/file.txt"
+}
+```
+
+#### 下载文件/文件夹
+```http
+GET /download?name=path/to/file.txt
+
+Response: 文件流（文件夹自动打包为 ZIP）
+```
+
+#### 删除文件
+```http
+DELETE /delete?name=path/to/file.txt
+
+Response:
+{
+  "message": "File and record deleted successfully",
+  "rows_affected": 1
+}
+```
+
+#### 重命名文件
+```http
+PUT /rename?oldName=old.txt&newName=new.txt
+
+Response:
+{
+  "message": "File renamed successfully",
+  "old_name": "old.txt",
+  "new_name": "new.txt"
+}
+```
+
+#### 移动文件
+```http
+PUT /move?oldpath=folder1/file.txt&newparent=folder2
+
+Response:
+{
+  "message": "File/folder moved successfully",
+  "old_path": "folder1/file.txt",
+  "new_path": "folder2/file.txt"
+}
+```
+
+#### 获取文件信息
+```http
+GET /info?name=path/to/file.txt
+
+Response:
+{
+  "name": "file.txt",
+  "size": 1024,
+  "mode": "-rw-r--r--",
+  "mod_time": "2025-11-01T12:00:00Z",
+  "is_directory": false
+}
+```
+
+### 目录操作
+
+#### 创建目录
+```http
+POST /createdir?path=new/folder/path
+
+Response:
+{
+  "message": "Directory created successfully",
+  "id": 123,
+  "path": "new/folder/path"
+}
+```
+
+#### 删除目录
+```http
+DELETE /deletedir?dirname=folder/path
+
+Response:
+{
+  "message": "Directory and its contents deleted successfully",
+  "path": "folder/path"
+}
+```
+
+#### 下载目录（ZIP）
+```http
+GET /downloaddir?dirname=folder/path
+
+Response: ZIP 文件流
+```
+
+### 文件列表
+
+#### 获取文件树
+```http
+GET /list
+
+Response:
+{
+  "total": 10,
+  "roots": [
+    {
+      "id": 1,
+      "name": "folder1",
+      "capacity": 0,
+      "is_dir": true,
+      "path": "folder1",
+      "children": [...]
+    }
+  ]
+}
+```
+
+#### 获取简单列表
+```http
+GET /list?format=simple
+
+Response:
+[
+  {"name": "file1.txt", "capacity": 1024},
+  {"name": "folder1", "capacity": 0}
+]
+```
+
+### 调试接口
+
+#### 查看数据库记录
+```http
+GET /debug/drivelist
+GET /debug/closure
+GET /debug/subtree/:id
+```
+
+### 待实现接口
+
+以下接口已定义路由但功能待实现（标记为 TODO）：
+
+- `DELETE /batch-delete` - 批量删除
+- `POST /batch-download` - 批量下载
+- `GET /search` - 文件搜索
+- `GET /filter/type` - 按类型过滤
+- `GET /filter/date` - 按日期过滤
+- `GET /filter/size` - 按大小过滤
+
+## 💡 核心功能实现
+
+### 1. 文件上传
+
+支持指定目录上传，自动创建不存在的父目录，维护闭包表关系：
+
+```go
+// 1. 保存文件到 uploads/path/file.txt
+// 2. 插入数据库记录
+// 3. 维护闭包表关系（自己到自己 + 与父节点的关系）
+```
+
+### 2. 文件移动
+
+使用事务保证文件系统和数据库一致性：
+
+```go
+// 1. 开始事务
+// 2. 移动文件系统文件
+// 3. 更新数据库路径
+// 4. 删除旧的闭包关系
+// 5. 建立新的闭包关系
+// 6. 更新所有子节点路径
+// 7. 提交事务（失败则回滚）
+```
+
+### 3. 目录删除
+
+利用闭包表级联删除所有后代节点：
+
+```go
+// 1. 查询目录 ID
+// 2. 删除闭包表中所有后代（CASCADE 自动处理）
+// 3. 删除文件系统目录
+```
+
+### 4. 文件树构建
+
+从闭包表高效构建完整文件树：
+
+```go
+// 1. 查询所有节点
+// 2. 查询 depth=1 的父子关系
+// 3. 构建树形结构
+// 4. 返回根节点列表
+```
+
+## 🎨 前端界面
+
+### 主要页面
+
+1. **文件浏览页面** (`/`)
+   - 面包屑导航
+   - 工具栏（新建、上传、刷新、视图切换）
+   - 文件列表（表格或卡片）
+   - 右键菜单
+
+2. **上传模态框**
+   - 拖拽上传区域
+   - 文件队列管理
+   - 实时进度显示
+
+3. **操作确认对话框**
+   - 删除确认
+   - 重命名输入
+   - 新建文件夹
+
+### 组件架构
+
+```
+App
+├── MainLayout (布局)
+│   ├── Header (顶部导航)
+│   ├── Sider (侧边栏)
+│   └── Content (内容区)
+│       └── HomePage (文件管理页面)
+│           ├── FileList (列表视图)
+│           ├── FileGrid (网格视图)
+│           └── UploadModal (上传组件)
+```
+
+### API 集成
+
+前端通过 Vite 代理访问后端：
+
+```
+前端请求: http://localhost:12000/api/list
+      ↓ (Vite 代理)
+后端接收: http://localhost:8000/list
+```
+
+配置在 `frontend/vite.config.ts`：
+```typescript
+server: {
+  host: '0.0.0.0',
+  port: 12000,
+  proxy: {
+    '/api': {
+      target: 'http://localhost:8000',
+      changeOrigin: true,
+      rewrite: (path) => path.replace(/^\/api/, ''),
+    },
+  },
+}
+```
+
+## 🔒 安全注意事项
+
+### 当前状态（开发版本）
+
+⚠️ **本项目为学习和开发用途，不建议直接用于生产环境**
+
+当前缺少的安全功能：
+- ❌ 用户认证和授权系统
+- ❌ 文件访问权限控制
+- ❌ 路径遍历攻击防护（需添加路径验证）
+- ❌ 文件类型和大小限制
+- ❌ CSRF 防护
+- ❌ HTTPS 加密传输
+
+### 生产环境建议
+
+如需在生产环境使用，请务必添加：
+
+1. **身份验证**
+   - JWT Token 或 Session 管理
+   - 用户注册和登录系统
+
+2. **权限控制**
+   - 文件所有权验证
+   - 读写权限分离
+   - 共享链接功能
+
+3. **输入验证**
+   ```go
+   // 防止路径遍历攻击
+   if strings.Contains(path, "..") {
+       return errors.New("invalid path")
+   }
+   ```
+
+4. **文件限制**
+   - 上传大小限制
+   - 文件类型白名单
+   - 病毒扫描集成
+
+5. **网络安全**
+   - HTTPS 证书配置
+   - CORS 策略设置
+   - Rate Limiting
+
+6. **数据备份**
+   - 数据库定期备份
+   - 文件存储冗余
+
+## 🛠️ 技术亮点
+
+### 1. 闭包表设计
+
+使用闭包表（Closure Table）管理文件树，相比传统方法的优势：
+
+| 特性 | 闭包表 | 邻接表 | 路径枚举 |
+|------|--------|--------|----------|
+| 查询所有后代 | O(1) | O(N*logN) | O(N) |
+| 插入节点 | O(depth) | O(1) | O(1) |
+| 移动子树 | O(nodes) | O(N) | O(N) |
+| 删除子树 | O(1)（CASCADE） | O(N) | O(N) |
+| 存储开销 | O(N²) | O(N) | O(N) |
+
+### 2. 事务一致性
+
+文件移动操作使用数据库事务确保文件系统和数据库的强一致性：
+
+```go
+tx, _ := db.Begin()
+defer func() {
+    if r := recover(); r != nil {
+        tx.Rollback()
+        // 回滚文件系统操作
+        os.Rename(newFullPath, oldFullPath)
+    }
+}()
+// ... 数据库操作
+tx.Commit()
+```
+
+### 3. 前端性能优化
+
+- **虚拟滚动**（未来计划）：处理大量文件列表
+- **图标缓存**：复用文件类型图标
+- **懒加载**：按需加载目录内容
+- **批量操作**：减少网络请求
+
+## 🐛 故障排查
+
+### 后端问题
+
+**问题：数据库连接失败**
+```
+panic: pq: password authentication failed for user "postgres"
+```
+
+解决：
+1. 检查 `server/server.go` 中的数据库连接字符串
+2. 确认 PostgreSQL 服务已启动
+3. 验证用户名和密码
+
+**问题：端口被占用**
+```
+bind: address already in use
+```
+
+解决：
+```bash
+# Windows PowerShell
+Get-Process -Id (Get-NetTCPConnection -LocalPort 8000).OwningProcess | Stop-Process
+
+# Linux/macOS
+lsof -ti:8000 | xargs kill
+```
+
+### 前端问题
+
+**问题：API 请求 404**
+```
+GET http://localhost:12000/api/list 404 (Not Found)
+```
+
+解决：
+1. 确认后端服务已启动（localhost:8000）
+2. 检查 `vite.config.ts` 代理配置
+3. 查看浏览器开发者工具 Network 标签
+
+**问题：依赖安装失败**
+```
+npm ERR! code ERESOLVE
+```
+
+解决：
+```bash
+# 清理缓存
+npm cache clean --force
+rm -rf node_modules package-lock.json
+
+# 重新安装
+npm install --legacy-peer-deps
+```
+
+### 外网访问问题
+
+**问题：外网无法访问前端**
+
+检查清单：
+- [ ] `vite.config.ts` 设置 `host: '0.0.0.0'`
+- [ ] 防火墙已开放 12000 端口
+- [ ] 云服务器安全组规则已配置
+- [ ] 使用正确的公网 IP 访问
+
+详见 [PORT_CONFIG.md](PORT_CONFIG.md)
+
+## 📚 相关文档
+
+- [快速开始指南](QUICKSTART.md) - 详细安装步骤
+- [端口配置说明](PORT_CONFIG.md) - 外网访问配置
+- [前端开发文档](frontend/README.md) - 前端技术细节
+- [功能总结](frontend/SUMMARY.md) - 功能清单
+- [Sprint 任务](TODO_sprint_1.md) - 开发任务列表
+
+## 🤝 贡献指南
+
+欢迎贡献代码！请遵循以下步骤：
+
+1. Fork 本仓库
+2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 提交 Pull Request
+
+### 代码规范
+
+**Go 代码**：
+- 遵循 `gofmt` 格式化
+- 使用有意义的变量名
+- 添加必要的注释
+
+**TypeScript/React**：
+- 使用 ESLint 和 Prettier
+- 组件使用 PascalCase
+- 函数使用 camelCase
+
+## 📄 许可证
+
+本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+
+## 👥 作者
+
+- **qingketsing** - *初始工作* - [GitHub](https://github.com/qingketsing)
+
+## 🙏 致谢
+
+- [Gin](https://github.com/gin-gonic/gin) - Go Web 框架
+- [React](https://react.dev/) - 前端框架
+- [Ant Design](https://ant.design/) - UI 组件库
+- [PostgreSQL](https://www.postgresql.org/) - 数据库系统
+
+## 📮 联系方式
+
+如有问题或建议，请通过以下方式联系：
+
+- 提交 [Issue](https://github.com/qingketsing/TheGreatestDriver/issues)
+- 发送邮件到项目维护者
+
+---
+
+⭐ 如果这个项目对你有帮助，请给个 Star！
+
+**项目状态**: 🚧 活跃开发中
+
 
 ## 部署说明
 
@@ -748,20 +1462,33 @@ server: {
    - 批量上传队列
    - 实时进度显示
 
-### 开发建议
+---
 
-- **开发模式**: 使用 `npm run dev` 启动热重载开发服务器
-- **代码检查**: 使用 `npm run lint` 进行代码规范检查
-- **类型检查**: TypeScript 提供完整的类型安全
-- **组件复用**: 所有组件都在 `src/components` 目录下
+## 📄 许可证
+
+本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+
+## 👥 作者
+
+- **qingketsing** - *初始工作* - [GitHub](https://github.com/qingketsing)
+
+## 🙏 致谢
+
+- [Gin](https://github.com/gin-gonic/gin) - Go Web 框架
+- [React](https://react.dev/) - 前端框架
+- [Ant Design](https://ant.design/) - UI 组件库
+- [PostgreSQL](https://www.postgresql.org/) - 数据库系统
+
+## 📮 联系方式
+
+如有问题或建议，请通过以下方式联系：
+
+- 提交 [Issue](https://github.com/qingketsing/TheGreatestDriver/issues)
+- 发送邮件到项目维护者
 
 ---
 
-## 许可证
+⭐ 如果这个项目对你有帮助，请给个 Star！
 
-本项目采用 MIT 许可证
+**项目状态**: 🚧 活跃开发中
 
-## 联系方式
-
-- GitHub: https://github.com/qingketsing/TheGreatestDriver
-- Issues: https://github.com/qingketsing/TheGreatestDriver/issues

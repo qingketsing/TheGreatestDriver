@@ -1084,6 +1084,18 @@ func (s *Server) handleFilterBySize(c *gin.Context) {
 	// TODO
 }
 
+func (s *Server) handleChunkUpload(c *gin.Context) {
+	// TODO
+}
+
+func (s *Server) handleQuickUpload(c *gin.Context) {
+	// TODO
+}
+
+func (s *Server) handleGetUploadProgress(c *gin.Context) {
+	// TODO
+}
+
 func (s *Server) SetupDefaultRouter() {
 	r := gin.Default()
 
@@ -1117,12 +1129,12 @@ func (s *Server) SetupDefaultRouter() {
 	// 按大小过滤
 	r.GET("/filter/size", s.handleFilterBySize)
 
-	// 	// 断点续传
-	// r.POST("/upload/chunk", s.handleChunkUpload)
-	// // 秒传（文件哈希检查）
-	// r.POST("/upload/quick", s.handleQuickUpload)
-	// // 获取上传进度
-	// r.GET("/upload/progress/:uploadId", s.handleGetUploadProgress)
+	// 断点续传
+	r.POST("/upload/chunk", s.handleChunkUpload)
+	// 秒传（文件哈希检查）
+	r.POST("/upload/quick", s.handleQuickUpload)
+	// 获取上传进度
+	r.GET("/upload/progress/:uploadId", s.handleGetUploadProgress)
 
 	// 调试路由
 	r.GET("/debug/drivelist", s.handleDebugDrivelist)
