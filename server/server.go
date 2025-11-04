@@ -2,7 +2,9 @@ package server
 
 import (
 	"archive/zip"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,7 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"single_drive/shared"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	_ "github.com/lib/pq"
 
@@ -25,6 +30,26 @@ type Server struct {
 	Metalist  []shared.MetaData
 	Ge        *gin.Engine
 }
+
+// 上传会话（内存示例，生产建议用 Redis/DB 持久化）
+type uploadSession struct {
+	UploadID     string
+	FileName     string
+	FileHash     string
+	TotalChunks  int
+	Received     map[int]bool
+	ReceivedSize int64
+	TotalSize    int64
+	TargetPath   string // 相对存储路径
+	Status       string // uploading, merging, done, error
+	CreatedAt    time.Time
+	mu           sync.Mutex
+}
+
+var (
+	uploadSessions = map[string]*uploadSession{}
+	sessionsMu     sync.Mutex
+)
 
 func (s *Server) SetupDefaultSql() {
 	db, err := sql.Open("postgres", "host=localhost port=5432 user=postgres password=329426 dbname=tododb sslmode=disable")
@@ -1085,15 +1110,374 @@ func (s *Server) handleFilterBySize(c *gin.Context) {
 }
 
 func (s *Server) handleChunkUpload(c *gin.Context) {
-	// TODO
+	// 接收分片上传参数
+	uploadId := c.PostForm("uploadId")
+	fileName := c.PostForm("fileName")
+	fileHash := c.PostForm("fileHash")
+	totalChunks, _ := strconv.Atoi(c.PostForm("totalChunks"))
+	chunkIndex, _ := strconv.Atoi(c.PostForm("chunkIndex"))
+	totalSize, _ := strconv.ParseInt(c.PostForm("totalSize"), 10, 64)
+	targetPath := c.PostForm("path") // 可选
+
+	if uploadId == "" || fileName == "" || totalChunks <= 0 || chunkIndex <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing upload metadata (uploadId,fileName,totalChunks,chunkIndex start from 1)"})
+		return
+	}
+
+	// 保存分片到临时目录
+	tmpDir := filepath.Join(s.uploadDir, "_tmp", uploadId)
+	if err := os.MkdirAll(tmpDir, os.ModePerm); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create tmp dir: " + err.Error()})
+		return
+	}
+
+	fileHeader, err := c.FormFile("chunk")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "chunk not provided: " + err.Error()})
+		return
+	}
+
+	dst := filepath.Join(tmpDir, fmt.Sprintf("%06d.part", chunkIndex))
+	if err := c.SaveUploadedFile(fileHeader, dst); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save chunk: " + err.Error()})
+		return
+	}
+
+	// 初始化/更新会话
+	sessionsMu.Lock()
+	sess, ok := uploadSessions[uploadId]
+	if !ok {
+		sess = &uploadSession{
+			UploadID:    uploadId,
+			FileName:    fileName,
+			FileHash:    strings.ToLower(fileHash),
+			TotalChunks: totalChunks,
+			Received:    map[int]bool{},
+			TotalSize:   totalSize,
+			TargetPath:  filepath.Clean(targetPath),
+			Status:      "uploading",
+			CreatedAt:   time.Now(),
+		}
+		uploadSessions[uploadId] = sess
+	} else {
+		// 更新会话的 TotalChunks（如果从秒传接口创建的会话 TotalChunks 为 0）
+		if sess.TotalChunks == 0 && totalChunks > 0 {
+			sess.TotalChunks = totalChunks
+		}
+	}
+	sessionsMu.Unlock()
+
+	sess.mu.Lock()
+	if _, seen := sess.Received[chunkIndex]; !seen {
+		sess.Received[chunkIndex] = true
+		if fileHeader != nil && fileHeader.Size > 0 {
+			sess.ReceivedSize += fileHeader.Size
+		}
+	}
+	receivedCount := len(sess.Received)
+	total := sess.TotalChunks
+	sess.mu.Unlock()
+
+	// 若所有分片到齐，则合并
+	if receivedCount >= total {
+		if err := s.mergeChunks(uploadId, sess); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "merge failed: " + err.Error()})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"uploadId":      uploadId,
+		"receivedCount": receivedCount,
+		"totalChunks":   total,
+		"status":        sess.Status,
+	})
+}
+
+// mergeChunks 合并所有分片文件
+func (s *Server) mergeChunks(uploadId string, sess *uploadSession) error {
+	// 防重复合并
+	sess.mu.Lock()
+	if sess.Status != "uploading" {
+		sess.mu.Unlock()
+		return nil
+	}
+	sess.Status = "merging"
+	sess.mu.Unlock()
+
+	tmpDir := filepath.Join(s.uploadDir, "_tmp", uploadId)
+	mergedTmp := filepath.Join(tmpDir, "merged.part")
+	out, err := os.Create(mergedTmp)
+	if err != nil {
+		sess.mu.Lock()
+		sess.Status = "error"
+		sess.mu.Unlock()
+		return fmt.Errorf("create merged file failed: %v", err)
+	}
+
+	// 按序合并 (chunkIndex 从 1 开始)
+	for i := 1; i <= sess.TotalChunks; i++ {
+		part := filepath.Join(tmpDir, fmt.Sprintf("%06d.part", i))
+		f, err := os.Open(part)
+		if err != nil {
+			sess.mu.Lock()
+			sess.Status = "error"
+			sess.mu.Unlock()
+			return fmt.Errorf("open part %d failed: %v", i, err)
+		}
+		_, err = io.Copy(out, f)
+		f.Close()
+		if err != nil {
+			sess.mu.Lock()
+			sess.Status = "error"
+			sess.mu.Unlock()
+			return fmt.Errorf("copy part %d failed: %v", i, err)
+		}
+	}
+	out.Sync()
+	out.Close() // 显式关闭文件，以便后续重命名
+
+	// 校验哈希
+	if sess.FileHash != "" {
+		h := sha256.New()
+		fr, err := os.Open(mergedTmp)
+		if err != nil {
+			sess.mu.Lock()
+			sess.Status = "error"
+			sess.mu.Unlock()
+			return fmt.Errorf("open merged file for hash failed: %v", err)
+		}
+		if _, err := io.Copy(h, fr); err != nil {
+			fr.Close()
+			sess.mu.Lock()
+			sess.Status = "error"
+			sess.mu.Unlock()
+			return fmt.Errorf("hash compute failed: %v", err)
+		}
+		fr.Close()
+		sum := hex.EncodeToString(h.Sum(nil))
+		if sum != strings.ToLower(sess.FileHash) {
+			sess.mu.Lock()
+			sess.Status = "error"
+			sess.mu.Unlock()
+			return fmt.Errorf("hash mismatch: expect %s got %s", sess.FileHash, sum)
+		}
+	}
+
+	// 移动到最终存储路径
+	finalDir := s.uploadDir
+	if sess.TargetPath != "" && sess.TargetPath != "." {
+		finalDir = filepath.Join(s.uploadDir, sess.TargetPath)
+	}
+	if err := os.MkdirAll(finalDir, os.ModePerm); err != nil {
+		sess.mu.Lock()
+		sess.Status = "error"
+		sess.mu.Unlock()
+		return fmt.Errorf("mkdir final dir failed: %v", err)
+	}
+	finalPath := filepath.Join(finalDir, sess.FileName)
+
+	// 如果目标文件已存在，添加时间戳后缀
+	if _, err := os.Stat(finalPath); err == nil {
+		finalPath = filepath.Join(finalDir, fmt.Sprintf("%d_%s", time.Now().Unix(), sess.FileName))
+	}
+
+	if err := os.Rename(mergedTmp, finalPath); err != nil {
+		sess.mu.Lock()
+		sess.Status = "error"
+		sess.mu.Unlock()
+		return fmt.Errorf("move merged to final failed: %v", err)
+	}
+
+	// 写数据库元数据
+	relName := sess.FileName
+	if sess.TargetPath != "" && sess.TargetPath != "." {
+		relName = filepath.ToSlash(filepath.Join(sess.TargetPath, sess.FileName))
+	}
+
+	// 确保父目录在数据库中存在（如果有父目录的话）
+	var parentID int64
+	hasParent := false
+	if sess.TargetPath != "" && sess.TargetPath != "." {
+		parentPath := filepath.ToSlash(sess.TargetPath)
+		err := s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", parentPath).Scan(&parentID)
+		if err == sql.ErrNoRows {
+			// 父目录不存在，创建它（容量为0表示目录）
+			err = s.DB.QueryRow("INSERT INTO drivelist (name, capacity) VALUES ($1, 0) RETURNING id", parentPath).Scan(&parentID)
+			if err != nil {
+				log.Printf("warning: failed to create parent directory record: %v", err)
+			} else {
+				// 插入父目录的自引用闭包
+				if _, err := s.DB.Exec("INSERT INTO drivelist_closure (ancestor, descendant, depth) VALUES ($1, $1, 0)", parentID); err != nil {
+					log.Printf("warning: failed to insert parent closure self: %v", err)
+				}
+				hasParent = true
+			}
+		} else if err == nil {
+			hasParent = true
+		}
+	}
+
+	var existingID int64
+	err = s.DB.QueryRow("SELECT id FROM drivelist WHERE name=$1", relName).Scan(&existingID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 插入新记录
+			var newID int64
+			fi, _ := os.Stat(finalPath)
+			var cap int64
+			if fi != nil {
+				cap = fi.Size()
+			}
+			err = s.DB.QueryRow("INSERT INTO drivelist (name, capacity) VALUES ($1, $2) RETURNING id", relName, cap).Scan(&newID)
+			if err != nil {
+				return fmt.Errorf("insert drivelist failed: %v", err)
+			}
+			// 插入闭包表自己->自己
+			if _, err := s.DB.Exec("INSERT INTO drivelist_closure (ancestor, descendant, depth) VALUES ($1, $1, 0)", newID); err != nil {
+				log.Printf("warning: insert closure self failed: %v", err)
+			}
+			// 如果有父目录，建立闭包关系
+			if hasParent {
+				_, err = s.DB.Exec(`
+					INSERT INTO drivelist_closure (ancestor, descendant, depth)
+					SELECT ancestor, $1, depth + 1
+					FROM drivelist_closure
+					WHERE descendant = $2
+				`, newID, parentID)
+				if err != nil {
+					log.Printf("warning: failed to link file to parent closure: %v", err)
+				}
+			}
+		} else {
+			return fmt.Errorf("query existing drivelist failed: %v", err)
+		}
+	} else {
+		// 已存在则更新容量
+		fi, _ := os.Stat(finalPath)
+		var cap int64
+		if fi != nil {
+			cap = fi.Size()
+		}
+		if _, err := s.DB.Exec("UPDATE drivelist SET capacity=$1 WHERE id=$2", cap, existingID); err != nil {
+			log.Printf("warning: update capacity failed: %v", err)
+		}
+	}
+
+	// 删除临时分片目录
+	_ = os.RemoveAll(tmpDir)
+
+	// 标记完成并清理会话
+	sess.mu.Lock()
+	sess.Status = "done"
+	sess.mu.Unlock()
+
+	sessionsMu.Lock()
+	delete(uploadSessions, uploadId)
+	sessionsMu.Unlock()
+
+	return nil
 }
 
 func (s *Server) handleQuickUpload(c *gin.Context) {
-	// TODO
+	// 秒传：检查文件哈希是否已存在
+	fileHash := c.PostForm("fileHash")
+	fileName := c.PostForm("fileName")
+	targetPath := c.PostForm("path")
+	totalSize, _ := strconv.ParseInt(c.PostForm("totalSize"), 10, 64)
+
+	if fileHash == "" || fileName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing fileHash or fileName"})
+		return
+	}
+
+	// 注意：当前 drivelist 表没有 file_hash 字段
+	// 这里简化实现：通过文件名匹配（生产环境应添加 file_hash 字段）
+	var existingID int64
+	var existingName string
+	err := s.DB.QueryRow("SELECT id, name FROM drivelist WHERE name=$1", fileName).Scan(&existingID, &existingName)
+
+	if err == nil {
+		// 找到相同文件名，返回秒传成功
+		c.JSON(http.StatusOK, gin.H{
+			"message":     "quick upload success (file exists)",
+			"existing_id": existingID,
+			"needUpload":  false,
+		})
+		return
+	}
+
+	// 文件不存在，需要上传
+	// 生成 uploadId
+	uploadId := fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileName)
+
+	// 创建临时目录
+	tmpDir := filepath.Join(s.uploadDir, "_tmp", uploadId)
+	if err := os.MkdirAll(tmpDir, os.ModePerm); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create tmp dir: " + err.Error()})
+		return
+	}
+
+	// 初始化上传会话
+	sessionsMu.Lock()
+	uploadSessions[uploadId] = &uploadSession{
+		UploadID:    uploadId,
+		FileName:    fileName,
+		FileHash:    strings.ToLower(fileHash),
+		TotalChunks: 0, // 将在第一个 chunk 请求时设置
+		Received:    map[int]bool{},
+		TotalSize:   totalSize,
+		TargetPath:  filepath.Clean(targetPath),
+		Status:      "uploading",
+		CreatedAt:   time.Now(),
+	}
+	sessionsMu.Unlock()
+
+	c.JSON(http.StatusOK, gin.H{
+		"needUpload": true,
+		"uploadId":   uploadId,
+		"uploadUrl":  "/upload/chunk",
+	})
 }
 
 func (s *Server) handleGetUploadProgress(c *gin.Context) {
-	// TODO
+	uploadId := c.Param("uploadId")
+
+	sessionsMu.Lock()
+	sess, ok := uploadSessions[uploadId]
+	sessionsMu.Unlock()
+
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "uploadId not found"})
+		return
+	}
+
+	sess.mu.Lock()
+	received := len(sess.Received)
+	total := sess.TotalChunks
+	status := sess.Status
+	receivedBytes := sess.ReceivedSize
+	totalBytes := sess.TotalSize
+	targetPath := sess.TargetPath
+	fileName := sess.FileName
+	sess.mu.Unlock()
+
+	percent := 0.0
+	if total > 0 {
+		percent = float64(received) / float64(total) * 100
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"uploadId":       uploadId,
+		"status":         status,
+		"receivedChunks": received,
+		"totalChunks":    total,
+		"receivedBytes":  receivedBytes,
+		"totalBytes":     totalBytes,
+		"percent":        percent,
+		"path":           targetPath,
+		"fileName":       fileName,
+	})
 }
 
 func (s *Server) SetupDefaultRouter() {
